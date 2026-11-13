@@ -255,25 +255,38 @@ test("a sidebar lists yours unless it chose repositories, or already has some", 
   assert.equal(m.withTeams(false, { teams: true }), false);
 });
 
-test("the search asks for yours and for the reviews asked of you, or of your teams too", () => {
-  const args = m.searchArgs(false);
-  assert.deepEqual(args.slice(0, 3), ["api", "graphql", "-f"]);
-  assert.ok(args.includes("mine=is:pr is:open archived:false author:@me"));
-  assert.ok(args.includes("asked=is:pr is:open archived:false user-review-requested:@me"));
-  assert.ok(m.searchArgs(true).includes("asked=is:pr is:open archived:false review-requested:@me"));
+test("yours are found light, then looked up by id with everything a row needs", () => {
+  const find = m.findArgs(false);
+  assert.deepEqual(find.slice(0, 3), ["api", "graphql", "-f"]);
+  assert.ok(find.includes("mine=is:pr is:open archived:false author:@me"));
+  assert.ok(find.includes("asked=is:pr is:open archived:false user-review-requested:@me"));
+  assert.ok(m.findArgs(true).includes("asked=is:pr is:open archived:false review-requested:@me"));
+  assert.doesNotMatch(m.FIND, /mergeStateStatus|statusCheckRollup/, "the search itself asks only for ids");
+  const details = m.detailsArgs(["PR_kwDOa1", 'PR_x"]) { viewer { login } } #', "PR_kwDOb2"]).at(-1);
+  assert.match(details, /nodes\(ids: \["PR_kwDOa1", "PR_kwDOb2"\]\)/, "only ids shaped like GitHub's go into the query");
+  assert.match(details, /mergeStateStatus/);
 });
 
-// A pull request as the search's GraphQL answers it.
+// A pull request as GraphQL gives it by id.
 const found = (repo, number, extra = {}) => ({
-  number, title: `Change ${number}`, url: `https://github.com/${repo}/pull/${number}`, isDraft: false,
+  id: `PR_${repo.replace("/", "_")}_${number}`, number, title: `Change ${number}`, url: `https://github.com/${repo}/pull/${number}`, isDraft: false,
   createdAt: "2026-11-01T10:00:00Z", updatedAt: "2026-11-12T10:00:00Z", headRefName: `feat/${number}`, baseRefName: "main",
   reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", additions: 3, deletions: 1, changedFiles: 1,
   author: { __typename: "User", login: "ana" }, repository: { nameWithOwner: repo }, autoMergeRequest: null,
   reviewRequests: { nodes: [] }, commits: { nodes: [] }, ...extra,
 });
-const search = (mine, asked, errors) => JSON.stringify({ data: { viewer: { login: "me" }, mine: { nodes: mine }, asked: { nodes: asked } }, errors });
+// The light search's answer, and a details call's.
+const search = (mine, asked, errors) => JSON.stringify({ data: { viewer: { login: "me" },
+  mine: { nodes: mine.map((n) => n && { id: n.id }) }, asked: { nodes: asked.map((n) => n && { id: n.id }) } }, errors });
+const nodes = (list, errors) => JSON.stringify({ data: { nodes: list }, errors });
+// Both steps, the way the sidebar takes them.
+function look(mine, asked, teams = false) {
+  const hits = m.parseFound(search(mine, asked));
+  const got = m.parseDetails(nodes([...mine, ...asked].filter(Boolean)));
+  return m.yours(hits, new Map(got.nodes.map((n) => [n.id, n])), teams);
+}
 
-test("the search's answer becomes the same pull requests a repository's list gives", () => {
+test("the details become the same pull requests a repository's list gives", () => {
   const checks = { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
     { __typename: "CheckRun", name: "Build", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-11-12T10:00:00Z",
       completedAt: "2026-11-12T10:01:00Z", detailsUrl: "https://ci/1", checkSuite: { workflowRun: { workflow: { name: "CI" } } } },
@@ -283,15 +296,11 @@ test("the search's answer becomes the same pull requests a repository's list giv
       completedAt: "2026-11-12T10:05:00Z", detailsUrl: "https://v", checkSuite: { workflowRun: null } },
     { __typename: "StatusContext", context: "deploy", state: "PENDING", targetUrl: "https://d", createdAt: "2026-11-12T10:07:00Z" },
   ] } } } }] };
-  const out = m.parseSearch(search(
-    [found("acme/web", 1, { author: { __typename: "User", login: "me" }, commits: checks, autoMergeRequest: { enabledAt: "x" } }), null],
-    [found("acme/api", 2, { author: { __typename: "Bot", login: "renovate" }, reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] } }),
-      found("acme/web", 1), { }],
-  ));
-  assert.equal(out.viewer, "me");
-  assert.deepEqual(out.errors, []);
-  assert.deepEqual(out.prs.map((p) => p.id), ["acme/web#1", "acme/api#2"], "each once; unreadable and non-pull-request results left out");
-  const [mine, theirs] = out.prs;
+  const web = found("acme/web", 1, { author: { __typename: "User", login: "me" }, commits: checks, autoMergeRequest: { enabledAt: "x" } });
+  const api = found("acme/api", 2, { author: { __typename: "Bot", login: "renovate" }, reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] } });
+  const prs = look([web, null], [api, web]);
+  assert.deepEqual(prs.map((p) => p.id), ["acme/web#1", "acme/api#2"], "each once, yours first; unreadable results left out");
+  const [mine, theirs] = prs;
   assert.equal(mine.mine, true);
   assert.equal(mine.autoMerge, true);
   assert.equal(mine.superseded, 1, "the cancelled run a newer one replaced");
@@ -301,15 +310,14 @@ test("the search's answer becomes the same pull requests a repository's list giv
   assert.equal(theirs.bot, true);
   assert.equal(theirs.author, "renovate");
   assert.equal(theirs.requested, true);
-  assert.equal(m.parseSearch("not json"), null);
-  assert.equal(m.parseSearch(JSON.stringify({ data: null, errors: [{ message: "boom" }] })), null);
+  // Details that didn't come back leave that pull request out.
+  assert.deepEqual(m.yours(m.parseFound(search([web], [api])), new Map([[api.id, api]])).map((p) => p.id), ["acme/api#2"]);
 });
 
 test("a review asked of a team is told apart from one asked of you", () => {
   const team = { nodes: [{ requestedReviewer: { __typename: "Team", name: "Frontend" } }, { requestedReviewer: { __typename: "User", login: "bo" } }] };
-  const out = m.parseSearch(search([], [found("acme/web", 3, { reviewRequests: team }), found("acme/web", 4, {
-    reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] } })]), "", true);
-  const [viaTeam, direct] = out.prs;
+  const [viaTeam, direct] = look([], [found("acme/web", 3, { reviewRequests: team }), found("acme/web", 4, {
+    reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] } })], true);
   assert.deepEqual([viaTeam.requested, viaTeam.viaTeam, viaTeam.teams], [false, true, ["Frontend"]]);
   assert.deepEqual([direct.requested, direct.viaTeam], [true, false]);
   const now = Date.parse("2026-11-13T12:00:00Z");
@@ -319,16 +327,50 @@ test("a review asked of a team is told apart from one asked of you", () => {
   const quiet = { ...viaTeam, review: null };
   assert.deepEqual(m.sections([quiet], "", "review").flatMap((s) => s.prs).map((p) => p.id), ["acme/web#3"], "a team's request waits on you too");
   // Without the teams option, everything the search for reviews found was asked of you by name.
-  assert.equal(m.parseSearch(search([], [found("acme/web", 3, { reviewRequests: { nodes: [] } })])).prs[0].requested, true);
+  assert.equal(look([], [found("acme/web", 3)])[0].requested, true);
 });
 
-test("an answer with holes keeps what it has and says what's missing", () => {
+test("answers with holes keep what they have and say what's missing", () => {
   const saml = "Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.";
-  const out = m.parseSearch(search([found("acme/web", 1), null], [], [{ message: saml }, { message: saml }]));
-  assert.equal(out.prs.length, 1);
-  assert.deepEqual(out.errors, [saml], "each problem once");
+  const hits = m.parseFound(search([found("acme/web", 1), null], [], [{ message: saml }, { message: saml }]));
+  assert.deepEqual([hits.viewer, hits.mine, hits.asked, hits.errors], ["me", ["PR_acme_web_1"], [], [saml]], "each problem once");
+  const got = m.parseDetails(nodes([found("acme/web", 1), null, { id: "I_issue" }], [{ message: "Something went wrong" }]));
+  assert.deepEqual(got.nodes.map((n) => n.id), ["PR_acme_web_1"], "unreadable and non-pull-request nodes left out");
+  assert.deepEqual(got.errors, ["Something went wrong"]);
+  for (const bad of ["not json", "", JSON.stringify({ data: null, errors: [{ message: "boom" }] })]) {
+    assert.equal(m.parseFound(bad), null);
+    assert.equal(m.parseDetails(bad), null);
+  }
   assert.match(m.explain(saml), /single sign-on/);
   assert.equal(m.explain("Not Found"), "Not Found", "no repository to blame");
+  for (const slow of ["gh: HTTP 502", "gh: HTTP 504", "502 Bad Gateway", "timed out"]) {
+    assert.ok(m.tooSlow(slow), slow);
+    assert.equal(m.explain(slow), "GitHub didn't answer in time.");
+  }
+  assert.equal(m.tooSlow("gh: HTTP 500"), false);
+});
+
+test("details come in batches, a few calls at a time", async () => {
+  assert.deepEqual(m.chunks([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
+  assert.deepEqual(m.chunks([], 10), []);
+  let active = 0;
+  let peak = 0;
+  const done = [];
+  await m.pool([1, 2, 3, 4, 5, 6, 7], 3, async (n) => {
+    peak = Math.max(peak, ++active);
+    await new Promise((resolve) => setImmediate(resolve));
+    active--;
+    done.push(n);
+  });
+  assert.equal(peak, 3);
+  assert.deepEqual(done.sort(), [1, 2, 3, 4, 5, 6, 7]);
+  await m.pool([], 4, async () => assert.fail("nothing to do"));
+});
+
+test("the longer GitHub takes, the longer until the next refresh", () => {
+  assert.equal(m.paced(m.DELAY.running, 2_000), m.DELAY.running, "a quick answer keeps the usual pace");
+  assert.equal(m.paced(m.DELAY.running, 50_000), 200_000, "fifty seconds of GitHub's time: next in two hundred");
+  assert.equal(m.paced(m.DELAY.settled, undefined), m.DELAY.settled);
 });
 
 test("the repositories yours are in, by name", () => {

@@ -6,7 +6,8 @@ import {
   DELAY, FILTERS, VIEWS, parse, listArgs, explain, nextDelay, sections, counts, stateCounts,
   duration, clock, took, opener, avatarFile, initials, strip, tags, size, isStale,
   parseRepo, uniqueRepos, sameRepo, repoKey, configured, shortName, inScope, repoCounts, problems,
-  chosenMode, withTeams, modeKey, teamsKey, INTRO_KEY, searchArgs, parseSearch, reposOf,
+  chosenMode, withTeams, modeKey, teamsKey, INTRO_KEY, reposOf,
+  BATCH, PARALLEL, findArgs, detailsArgs, parseFound, parseDetails, yours, chunks, pool, tooSlow, paced,
 } from "./model.js";
 
 const ART = "mods/github-prs/";
@@ -56,6 +57,8 @@ export default class PullRequests extends View {
     this.errors = new Map();
     this.partial = new Set();
     this.derived = null;
+    // Node id → the last details GitHub gave for one of yours, kept while a batch fails.
+    this.known = null;
     this.loading = false;
     this.again = false;
     this.fetched = null;
@@ -243,7 +246,9 @@ export default class PullRequests extends View {
       if (answers.some(([, prs]) => prs)) this.fetched = Date.now();
       const failed = answers.some(([, prs]) => !prs);
       const ok = answers.flatMap(([, prs]) => prs ?? []);
-      let delay = failed ? Math.min(DELAY.error, nextDelay(ok)) : nextDelay(ok);
+      // The longer GitHub took to answer, the longer until it's asked again.
+      const spent = answers.reduce((total, [, , , ms]) => total + (ms ?? 0), 0);
+      let delay = paced(failed ? Math.min(DELAY.error, nextDelay(ok)) : nextDelay(ok), spent);
       if (this.again) { this.again = false; delay = 0; }
       this.loading = false;
       this.pending = cx.timer.after(delay, (cx) => this.refresh(cx));
@@ -252,28 +257,67 @@ export default class PullRequests extends View {
     });
   }
 
+  // Each answer is [source, pull requests or null, what went wrong, how long GitHub took in ms].
   async fetch(repo) {
+    const start = Date.now();
     try {
       const result = await exec("gh", listArgs(repo), { timeout: 60_000 });
       if (result.code !== 0) throw new Error(result.stderr || result.stdout || `gh exited with ${result.code}`);
-      return [repo, parse(result.stdout, this.viewer, repo), null];
+      return [repo, parse(result.stdout, this.viewer, repo), null, Date.now() - start];
     } catch (error) {
-      return [repo, null, explain(error?.message ?? error, repo)];
+      return [repo, null, explain(error?.message ?? error, repo), Date.now() - start];
     }
   }
 
-  // Yours, from every repository: the pull requests you opened and those waiting on your review,
-  // in one call. An answer with holes (an organization that limits what gh reads) is still listed.
+  // One gh call, timed, that never throws: a program that can't start answers like a failed call.
+  async gh(args, timing) {
+    const start = Date.now();
+    try {
+      return await exec("gh", args, { timeout: 60_000 });
+    } catch (error) {
+      return { code: 1, stdout: "", stderr: String(error?.message ?? error) };
+    } finally {
+      timing.ms += Date.now() - start;
+    }
+  }
+
+  // Yours, from every repository. A light search finds the pull requests you opened and those
+  // waiting on your review; then their details come by id, BATCH at a time and PARALLEL calls at
+  // once. A batch GitHub gives up on is asked again in halves. A pull request whose details
+  // didn't come back keeps the ones it had, and the banner says so.
   async fetchMine() {
     const teams = this.teams();
+    const timing = { ms: 0 };
     try {
-      const result = await exec("gh", searchArgs(teams), { timeout: 60_000 });
-      const found = parseSearch(result.stdout, this.viewer, teams);
+      const result = await this.gh(findArgs(teams), timing);
+      const found = parseFound(result.stdout);
       if (!found) throw new Error(result.stderr || result.stdout || `gh exited with ${result.code}`);
       if (found.viewer) this.viewer = found.viewer;
-      return [ME, found.prs, found.errors.length ? `Some pull requests couldn't be read. ${explain(found.errors[0])}` : null];
+      else found.viewer = this.viewer;
+      const details = new Map();
+      const errors = [...found.errors];
+      const ask = async (ids, split) => {
+        const answer = await this.gh(detailsArgs(ids), timing);
+        const got = parseDetails(answer.stdout);
+        if (!got && split && ids.length > 1 && tooSlow(answer.stderr)) {
+          const half = Math.ceil(ids.length / 2);
+          await Promise.all([ask(ids.slice(0, half), false), ask(ids.slice(half), false)]);
+          return;
+        }
+        if (!got) { errors.push(answer.stderr || answer.stdout || `gh exited with ${answer.code}`); return; }
+        for (const node of got.nodes) details.set(node.id, node);
+        errors.push(...got.errors);
+      };
+      const ids = [...new Set([...found.mine, ...found.asked])];
+      await pool(chunks(ids, BATCH), PARALLEL, (batch) => ask(batch, true));
+      // Pull requests to show and no details for any of them: a failure, not an empty list.
+      if (ids.length && !details.size) throw new Error(errors[0] ?? "gh failed without saying why.");
+      for (const id of ids) if (!details.has(id) && this.known?.has(id)) details.set(id, this.known.get(id));
+      this.known = details;
+      const problem = errors.length ? `Some pull requests couldn't be read. ${explain(errors[0])}` : null;
+      return [ME, yours(found, details, teams), problem, timing.ms];
     } catch (error) {
-      return [ME, null, explain(error?.message ?? error)];
+      return [ME, null, explain(error?.message ?? error), timing.ms];
     }
   }
 
@@ -583,9 +627,9 @@ export default class PullRequests extends View {
       .cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.raised).text_color(t.foreground))
       .on_click((_e, cx) => { cx.stop_propagation(); this.visit(pr.url, cx); })
       .child(glyph("external", 12));
-    return h_flex().id(`pr-${pr.id}`).flex_none().min_w(0).pl(8).pr(6).py(6).gap(8).items_start()
+    return h_flex().id(`pr-${pr.id}`).flex_none().min_w(0).pl(10).pr(6).py(6).gap(8).items_start()
       .role("button").aria_selected(open).accessibility_label(tip).tooltip(tip)
-      .rounded(6).border_l(2).border_color(pr.mine ? t.accent : t.chrome)
+      .rounded(6)
       .cursor_pointer().when(open, (el) => el.bg(t.selected)).when(!open, (el) => el.hover((s) => s.bg(t.hover)))
       .on_hover((inside, cx) => {
         if (inside) this.hovered = pr.id;

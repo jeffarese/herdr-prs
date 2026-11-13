@@ -22,9 +22,9 @@ const LIST = [
   },
 ];
 
-// A pull request as GitHub's search answers it in GraphQL, from the shape `gh pr list` gives.
+// A pull request as GitHub's GraphQL gives it by id, from the shape `gh pr list` gives.
 const node = (repo, p) => ({
-  number: p.number, title: p.title, url: p.url, isDraft: p.isDraft, createdAt: p.createdAt ?? null, updatedAt: p.updatedAt,
+  id: `PR_${repo.replace("/", "_")}_${p.number}`, number: p.number, title: p.title, url: p.url, isDraft: p.isDraft, createdAt: p.createdAt ?? null, updatedAt: p.updatedAt,
   headRefName: p.headRefName, baseRefName: p.baseRefName, reviewDecision: p.reviewDecision, mergeable: p.mergeable,
   mergeStateStatus: p.mergeStateStatus ?? null, additions: 0, deletions: 0, changedFiles: 0, autoMergeRequest: null,
   author: { __typename: p.author.is_bot ? "Bot" : "User", login: p.author.login.replace(/^app\//, "") }, repository: { nameWithOwner: repo },
@@ -34,16 +34,35 @@ const node = (repo, p) => ({
 });
 // Yours: your pull request in o/r, and one in acme/web that asks for your review.
 const ASKED = { ...LIST[1], number: 3, isDraft: false, url: "https://github.com/acme/web/pull/3", reviewRequests: [{ __typename: "User", login: "me" }] };
-const answer = (mine, asked, errors) => JSON.stringify({ data: { viewer: { login: "me" }, mine: { nodes: mine }, asked: { nodes: asked } }, ...(errors ? { errors } : {}) });
-const SEARCH = { code: 0, stdout: answer([node("o/r", LIST[0])], [node("acme/web", ASKED)]), stderr: "" };
+// GitHub, for the search for yours. The light search answers the ids of `mine` and `asked` (and of
+// `team` too, when it's asked for review-requested); a details call answers the nodes it names.
+// `errors` go with the search's answer, `details(ids)` can answer a details call itself.
+const query = (args) => args.find((a) => a.startsWith("query=")) ?? "";
+const idsIn = (args) => JSON.parse(`[${query(args).match(/nodes\(ids: \[(.*?)\]\)/)?.[1] ?? ""}]`);
+function github({ mine = [], asked = [], team = [], errors, details } = {}) {
+  const all = new Map([...mine, ...asked, ...team].filter(Boolean).map((n) => [n.id, n]));
+  return (args) => {
+    if (query(args).includes("nodes(ids:")) {
+      const ids = idsIn(args);
+      return details?.(ids) ?? { code: 0, stdout: JSON.stringify({ data: { nodes: ids.map((id) => all.get(id) ?? null) } }), stderr: "" };
+    }
+    const teams = args.some((a) => a.startsWith("asked=") && a.includes(" review-requested:"));
+    const ids = (list) => ({ nodes: list.map((n) => (n ? { id: n.id } : null)) });
+    const data = { viewer: { login: "me" }, mine: ids(mine), asked: ids(teams ? [...asked, ...team] : asked) };
+    return { code: errors ? 1 : 0, stdout: JSON.stringify({ data, ...(errors ? { errors } : {}) }), stderr: errors ? `gh: ${errors[0].message}` : "" };
+  };
+}
+const YOURS = { mine: [node("o/r", LIST[0])], asked: [node("acme/web", ASKED)] };
 
-function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, width = 340, store = {}, folders = [], repos = {}, lists = {}, failing = [], cached = [], curl = 0, stored = { filter: JSON.stringify("all") }, search = () => SEARCH } = {}) {
+function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, width = 340, store = {}, folders = [], repos = {}, lists = {}, failing = [], cached = [], curl = 0, stored = { filter: JSON.stringify("all") }, search = github(YOURS) } = {}) {
   const execs = [];
   const commands = [];
   const notes = [];
   const timers = [];
   const tasks = [];
   const removed = [];
+  // GraphQL calls in flight at once, at most.
+  const load = { active: 0, peak: 0 };
   const el = () => {
     const data = { nodes: [], props: {} };
     const proxy = new Proxy(data, { get(target, key) {
@@ -82,7 +101,13 @@ function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, wi
       }
       if (command === "gh" && args[0] === "pr" && lists[args[3]]) return { code: 0, stdout: JSON.stringify(lists[args[3]]), stderr: "" };
       if (command === "gh" && args[0] === "pr" && failing.includes(args[3])) return { code: 1, stdout: "", stderr: "HTTP 404: Not Found" };
-      if (command === "gh" && args[0] === "api" && args[1] === "graphql") return search(args);
+      if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
+        load.peak = Math.max(load.peak, ++load.active);
+        await null;
+        await null;
+        load.active--;
+        return search(args);
+      }
       if (command === "gh" && args[0] === "api") return { code: 0, stdout: "me\n", stderr: "" };
       if (command === "gh") return { code, stdout: code ? "" : JSON.stringify(list), stderr };
       if (command === "curl") return { code: curl, stdout: "", stderr: "" };
@@ -102,7 +127,7 @@ function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, wi
   view.init({}, cx);
   view.width = width;
   const settle = async () => { while (tasks.length) await tasks.shift(); };
-  return { view, cx, input, repoInput: inputs[1], execs, commands, notes, timers, storage, settle, removed, store };
+  return { view, cx, input, repoInput: inputs[1], execs, commands, notes, timers, storage, settle, removed, store, load };
 }
 
 function find(node, id) {
@@ -407,15 +432,19 @@ test("several repositories list together, with tabs, and one failing doesn't hid
   assert.equal(h.view.scope, "all", "clicking the chosen tab again shows them all");
 });
 
-const searches = (h) => h.execs.filter((e) => e[0] === "gh" && e[2] === "graphql");
+const graphql = (h) => h.execs.filter((e) => e[0] === "gh" && e[2] === "graphql");
+// The light searches, and the calls for details by id.
+const finds = (h) => graphql(h).filter((e) => e.some((a) => a.startsWith("asked=")));
+const lookups = (h) => graphql(h).filter((e) => !e.some((a) => a.startsWith("asked=")));
 const asked = (call) => call.find((a) => a.startsWith("asked="));
 
 test("a new sidebar lists yours from every repository at once, and says so the first time", async () => {
   const h = setup({ given: {} });
   await h.settle();
-  assert.equal(searches(h).length, 1, "one search covers every repository");
-  assert.ok(searches(h)[0].includes("mine=is:pr is:open archived:false author:@me"));
-  assert.equal(asked(searches(h)[0]), "asked=is:pr is:open archived:false user-review-requested:@me", "reviews asked of you by name");
+  assert.equal(finds(h).length, 1, "one search covers every repository");
+  assert.ok(finds(h)[0].includes("mine=is:pr is:open archived:false author:@me"));
+  assert.equal(asked(finds(h)[0]), "asked=is:pr is:open archived:false user-review-requested:@me", "reviews asked of you by name");
+  assert.deepEqual(lookups(h).map(idsIn), [["PR_o_r_7", "PR_acme_web_3"]], "then their details, by id");
   assert.equal(h.execs.filter((e) => e[1] === "pr" || e[2] === "user").length, 0, "no repository list, and the search says who you are");
   let root = h.view.render();
   assert.equal(find(root, "setup"), null, "nothing to set up");
@@ -423,6 +452,7 @@ test("a new sidebar lists yours from every repository at once, and says so the f
   assert.ok(find(root, "pr-o/r#7") && find(root, "pr-acme/web#3"));
   assert.ok(texts(root).includes("r#7") && texts(root).includes("web#3"), "rows name their repository");
   assert.ok(texts(find(root, "pr-acme/web#3")).includes("Your review"));
+  assert.equal(find(root, "pr-o/r#7").props.border_l, undefined, "your own rows have no accent line");
   assert.deepEqual([texts(find(root, "scope-0"))[0], texts(find(root, "scope-1"))[0]], ["r", "web"], "tabs for the repositories they're in");
   find(root, "repo").props.on_click(null, h.cx);
   await h.settle();
@@ -448,7 +478,7 @@ test("a new sidebar lists yours from every repository at once, and says so the f
 test("a sidebar that already lists repositories keeps listing them", async () => {
   const h = setup({ given: {}, store: { "github-prs.repos.prs": ["o/r"] } });
   await h.settle();
-  assert.equal(searches(h).length, 0);
+  assert.equal(graphql(h).length, 0);
   assert.deepEqual(h.execs.filter((e) => e[1] === "pr").map((e) => e[4]), ["o/r"]);
   const root = h.view.render();
   assert.equal(find(root, "intro"), null, "no note about the other way");
@@ -457,7 +487,7 @@ test("a sidebar that already lists repositories keeps listing them", async () =>
   // A layout can say which, whatever it seeds.
   const told = setup({ given: { mode: "me", repos: ["o/r"] } });
   await told.settle();
-  assert.equal(searches(told).length, 1);
+  assert.equal(finds(told).length, 1);
   assert.equal(told.execs.filter((e) => e[1] === "pr").length, 0);
 });
 
@@ -492,7 +522,7 @@ test("the panel switches between yours and repositories, and keeps the repositor
   await h.settle();
   assert.equal(h.store["github-prs.mode.prs"], "me");
   assert.deepEqual(h.store["github-prs.repos.prs"], ["acme/shop"]);
-  assert.equal(searches(h).length, 2);
+  assert.equal(finds(h).length, 2);
   find(h.view.render(), "setup-done").props.on_click(null, h.cx);
   assert.ok(find(h.view.render(), "pr-o/r#7"));
 });
@@ -500,8 +530,7 @@ test("the panel switches between yours and repositories, and keeps the repositor
 test("the teams option asks for every review request and tags the ones a team got", async () => {
   const team = { ...ASKED, number: 5, url: "https://github.com/acme/web/pull/5", reviewDecision: null,
     reviewRequests: [{ __typename: "Team", name: "Frontend" }] };
-  const h = setup({ given: {}, search: (args) => (asked(args).includes(" review-requested:")
-    ? { code: 0, stdout: answer([node("o/r", LIST[0])], [node("acme/web", ASKED), node("acme/web", team)]), stderr: "" } : SEARCH) });
+  const h = setup({ given: {}, search: github({ ...YOURS, team: [node("acme/web", team)] }) });
   await h.settle();
   h.view.openSetup(true, h.cx);
   const option = find(h.view.render(), "teams");
@@ -509,7 +538,7 @@ test("the teams option asks for every review request and tags the ones a team go
   option.props.on_click(null, h.cx);
   assert.equal(h.store["github-prs.teams.prs"], true);
   await h.settle();
-  assert.equal(asked(searches(h).at(-1)), "asked=is:pr is:open archived:false review-requested:@me");
+  assert.equal(asked(finds(h).at(-1)), "asked=is:pr is:open archived:false review-requested:@me");
   h.view.openSetup(false, h.cx);
   const root = h.view.render();
   const row = find(root, "pr-acme/web#5");
@@ -519,9 +548,43 @@ test("the teams option asks for every review request and tags the ones a team go
   assert.equal(find(root, "filter-review").props.accessibility_label, "Review: 2 pull requests");
 });
 
+// Many review requests, as teams bring: number 100 and up, in acme/big.
+const many = (n) => Array.from({ length: n }, (_, i) => node("acme/big", { ...ASKED, number: 100 + i, url: `https://github.com/acme/big/pull/${100 + i}` }));
+
+test("a hundred of yours come by id, ten a call and four calls at a time", async () => {
+  const asks = many(45);
+  const h = setup({ given: {}, search: github({ mine: YOURS.mine, asked: asks }) });
+  await h.settle();
+  assert.deepEqual(lookups(h).map((e) => idsIn(e).length), [10, 10, 10, 10, 6]);
+  assert.equal(h.load.peak, model.PARALLEL);
+  assert.equal(h.view.prs.length, 46);
+  assert.equal(find(h.view.render(), "error"), null);
+});
+
+test("a batch GitHub gives up on is asked again in halves; one that still fails keeps what it had", async () => {
+  const asks = many(12);
+  let refusing = (ids) => ids.length > 5;
+  const slow = { code: 1, stdout: "", stderr: "gh: HTTP 502" };
+  const h = setup({ given: {}, search: github({ mine: [], asked: asks, details: (ids) => (refusing(ids) ? slow : undefined) }) });
+  await h.settle();
+  // 10 and 2; the 10 failed, and came back as 5 and 5.
+  assert.deepEqual(lookups(h).map((e) => idsIn(e).length), [10, 2, 5, 5]);
+  assert.equal(h.view.prs.length, 12);
+  assert.equal(find(h.view.render(), "error"), null, "nothing was missing in the end");
+  // Next time the second half of the first batch can't be read at all: its pull requests keep
+  // the details they had, and the banner says some couldn't be read.
+  refusing = (ids) => ids.length > 5 || ids.includes("PR_acme_big_107");
+  find(h.view.render(), "refresh").props.on_click(null, h.cx);
+  await h.settle();
+  assert.equal(h.view.prs.length, 12, "none of them went missing");
+  const banner = texts(find(h.view.render(), "error")).join(" ");
+  assert.match(banner, /Some pull requests couldn't be read\. GitHub didn't answer in time\./);
+  assert.doesNotMatch(banner, /Showing the list from/);
+});
+
 test("an answer with holes lists what came back and says what's missing; a failed one says what to do", async () => {
   const saml = "Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.";
-  const h = setup({ given: {}, search: () => ({ code: 1, stdout: answer([node("o/r", LIST[0]), null], [], [{ message: saml }]), stderr: `gh: ${saml}` }) });
+  const h = setup({ given: {}, search: github({ mine: [node("o/r", LIST[0]), null], asked: [], errors: [{ message: saml }] }) });
   await h.settle();
   let root = h.view.render();
   assert.ok(find(root, "pr-o/r#7"));
@@ -534,11 +597,19 @@ test("an answer with holes lists what came back and says what's missing; a faile
   root = signedOut.view.render();
   assert.ok(texts(find(root, "error")).some((s) => s.includes("gh auth login")));
   assert.equal(signedOut.timers.at(-1).ms, model.DELAY.error);
+  // Found, but no details came back for any of them: that's a failure, not an empty list.
+  const lost = setup({ given: {}, search: github({ ...YOURS, details: () => ({ code: 1, stdout: "", stderr: "gh: HTTP 504" }) }) });
+  await lost.settle();
+  root = lost.view.render();
+  assert.equal(lost.view.prs, null);
+  assert.ok(texts(find(root, "error")).some((s) => s.includes("GitHub didn't answer in time")));
+  assert.equal(lost.timers.at(-1).ms, model.DELAY.error);
 });
 
 test("with nothing of yours open, the list says so, whichever chip is on", async () => {
-  const h = setup({ given: {}, stored: {}, search: () => ({ code: 0, stdout: answer([], []), stderr: "" }) });
+  const h = setup({ given: {}, stored: {}, search: github({}) });
   await h.settle();
+  assert.equal(lookups(h).length, 0, "nothing found, nothing to look up");
   const words = texts(h.view.render());
   assert.ok(words.includes("Nothing of yours is open, and no review is waiting on you"));
   assert.ok(words.some((w) => /Reviews asked of your teams aren't included/.test(w)));

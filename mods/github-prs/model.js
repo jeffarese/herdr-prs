@@ -254,15 +254,18 @@ export function parse(stdout, viewer, repo = "") {
 
 export const listArgs = (repo) => ["pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", FIELDS];
 
-// "me" asks GitHub's search twice in one GraphQL call: pull requests you opened, and those waiting
-// on your review. The fields are the ones `gh pr list --json FIELDS` asks for, as gh asks for them.
-export const SEARCH = `query($mine: String!, $asked: String!) {
+// "me" asks in two steps. A light search finds your pull requests and those waiting on your
+// review, by id; then their details come by id, a few at a time. Asked for inside the search, the
+// details of a hundred pull requests take GitHub past its 10-second limit, and it answers 502:
+// mergeStateStatus costs the most, and review requests to teams easily number a hundred.
+export const FIND = `query($mine: String!, $asked: String!) {
   viewer { login }
-  mine: search(query: $mine, type: ISSUE, first: 100) { nodes { ...pr } }
-  asked: search(query: $asked, type: ISSUE, first: 100) { nodes { ...pr } }
-}
-fragment pr on PullRequest {
-  number title url isDraft createdAt updatedAt headRefName baseRefName
+  mine: search(query: $mine, type: ISSUE, first: 100) { nodes { ... on PullRequest { id } } }
+  asked: search(query: $asked, type: ISSUE, first: 100) { nodes { ... on PullRequest { id } } }
+}`;
+
+// The fields `gh pr list --json FIELDS` asks for, as gh asks for them.
+const DETAILS = `id number title url isDraft createdAt updatedAt headRefName baseRefName
   reviewDecision mergeable mergeStateStatus additions deletions changedFiles
   author { __typename login }
   repository { nameWithOwner }
@@ -272,20 +275,30 @@ fragment pr on PullRequest {
     __typename
     ... on CheckRun { name status conclusion startedAt completedAt detailsUrl checkSuite { workflowRun { workflow { name } } } }
     ... on StatusContext { context state targetUrl createdAt }
-  } } } } } }
-}`;
+  } } } } } }`;
+
+// Pull requests per call for their details, and calls at once. Ten take GitHub 2 to 7 seconds.
+export const BATCH = 10;
+export const PARALLEL = 4;
 
 // Open pull requests only, and none from archived repositories, as GitHub's own lists do.
 const OPEN = "is:pr is:open archived:false";
 
-/** The search for "me". `review-requested` includes requests made to your teams;
+/** The light search for "me". `review-requested` includes requests made to your teams;
  *  `user-review-requested` only those made to you by name. */
-export const searchArgs = (teams) => ["api", "graphql", "-f", `query=${SEARCH}`,
+export const findArgs = (teams) => ["api", "graphql", "-f", `query=${FIND}`,
   "-f", `mine=${OPEN} author:@me`, "-f", `asked=${OPEN} ${teams ? "review-requested" : "user-review-requested"}:@me`];
 
-/** A pull request from the search, in the shape `gh pr list --json` gives (gh flattens checks
- *  the same way), so the rest of the sidebar doesn't know where it came from. */
-export function fromSearch(node) {
+// A node id, as GitHub writes them (PR_kwDO…). Checked before one goes into a query.
+const NODE_ID = /^[A-Za-z0-9_=-]{1,200}$/;
+
+/** The details of some pull requests, by id. */
+export const detailsArgs = (ids) => ["api", "graphql", "-f",
+  `query=query { nodes(ids: [${ids.filter((id) => NODE_ID.test(id)).map((id) => `"${id}"`).join(", ")}]) { ... on PullRequest { ${DETAILS} } } }`];
+
+/** A pull request from GraphQL, in the shape `gh pr list --json` gives (gh flattens checks the
+ *  same way), so the rest of the sidebar doesn't know where it came from. */
+export function fromGraphQL(node) {
   const contexts = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
   return {
     ...node,
@@ -298,27 +311,68 @@ export function fromSearch(node) {
   };
 }
 
-/** What the search found: who you are, your pull requests and those waiting on you (each once),
- *  and what GitHub said it couldn't answer. `gh api graphql` exits 1 when part of an answer
- *  failed and still prints the rest, so whatever came back is kept. Null when nothing did. */
-export function parseSearch(stdout, viewer = "", teams = false) {
-  let body;
-  try { body = JSON.parse(stdout); } catch { return null; }
+// `gh api graphql` exits 1 when part of an answer failed, and still prints the rest.
+function json(stdout) {
+  try { return JSON.parse(stdout); } catch { return null; }
+}
+const messages = (body) => [...new Set((body?.errors ?? []).map((e) => String(e?.message ?? "").trim()).filter(Boolean))];
+
+/** The light search's answer: who you are, the ids of yours (`mine`) and of those asking for
+ *  your review (`asked`), and what GitHub couldn't answer. Null when nothing came back. */
+export function parseFound(stdout) {
+  const body = json(stdout);
   const data = body?.data;
   if (!data?.mine && !data?.asked) return null;
-  const me = data.viewer?.login || viewer;
-  const found = new Map();
+  // A null node is one the token can't read.
+  const ids = (key) => (data[key]?.nodes ?? []).map((n) => n?.id).filter((id) => NODE_ID.test(id ?? ""));
+  return { viewer: data.viewer?.login ?? "", mine: ids("mine"), asked: ids("asked"), errors: messages(body) };
+}
+
+/** One batch of details: the pull requests GitHub could read, and what it said about the rest.
+ *  Null when nothing came back. */
+export function parseDetails(stdout) {
+  const body = json(stdout);
+  if (!Array.isArray(body?.data?.nodes)) return null;
+  // A null node is one the token can't read; one without a repository isn't a pull request.
+  return { nodes: body.data.nodes.filter((n) => n?.id && n.repository?.nameWithOwner), errors: messages(body) };
+}
+
+/** Yours, from what the search found and the details that came back for it (by id): each once,
+ *  yours first. */
+export function yours(found, details, teams = false) {
+  const out = new Map();
   for (const [key, asked] of [["mine", ""], ["asked", teams ? "team" : "you"]]) {
-    // A null node is one the token can't read; one without a repository isn't a pull request.
-    for (const node of data[key]?.nodes ?? []) {
-      if (!node?.repository?.nameWithOwner) continue;
-      const pr = pullRequest(fromSearch(node), me, node.repository.nameWithOwner, asked);
-      if (!found.has(pr.id)) found.set(pr.id, pr);
+    for (const id of found[key]) {
+      const node = details.get(id);
+      if (node && !out.has(id)) out.set(id, pullRequest(fromGraphQL(node), found.viewer, node.repository.nameWithOwner, asked));
     }
   }
-  const errors = [...new Set((body.errors ?? []).map((e) => String(e?.message ?? "").trim()).filter(Boolean))];
-  return { viewer: me, prs: [...found.values()], errors };
+  return [...out.values()];
 }
+
+/** `items` in groups of `size`. */
+export function chunks(items, size) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/** Runs `work` on every item, at most `limit` at a time. */
+export async function pool(items, limit, work) {
+  const queue = [...items];
+  await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    while (queue.length) await work(queue.shift());
+  }));
+}
+
+/** Whether GitHub gave up on a query: past its time limit, its gateway answers 502 or 504. */
+export const tooSlow = (text) => /HTTP 50[24]|Bad Gateway|Gateway Time-?out|timed? ?out/i.test(String(text ?? ""));
+
+// GitHub lets an account use about a minute of its servers' time a minute through GraphQL, and
+// counts the time its answers take. A refresh waits at least this many times as long as its
+// calls took, so a sidebar keeps to a quarter of that, however much it lists.
+export const PACE = 4;
+export const paced = (delay, spent) => Math.max(delay, Math.round((Number(spent) || 0) * PACE));
 
 /** What went wrong, in words a person can act on. `repo` names the repository that was asked
  *  about, when one was. */
@@ -328,7 +382,7 @@ export function explain(text, repo = "") {
   if (/SAML|single sign-on|OAuth App access restrictions/i.test(message)) return "An organization limits what gh can read: authorize GitHub CLI for its single sign-on, or ask an owner to approve it.";
   if (repo && /could not resolve to a repository|HTTP 404|not found/i.test(message)) return `Can't see ${repo}. Check the name and your access.`;
   if (/ENOENT|no such file|not installed|cannot start|can't start|failed to start|command not found/i.test(message)) return "The GitHub CLI (gh) isn't installed, or isn't on Herdr's PATH.";
-  if (/timed? ?out/i.test(message)) return "GitHub didn't answer in time.";
+  if (tooSlow(message)) return "GitHub didn't answer in time.";
   if (/could not resolve host|network|connection/i.test(message)) return "Can't reach GitHub. Check the connection.";
   return message.split("\n").find(Boolean)?.slice(0, 200) || "gh failed without saying why.";
 }

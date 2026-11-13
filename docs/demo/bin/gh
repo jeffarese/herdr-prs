@@ -3,10 +3,12 @@
 
 It answers the few `gh` calls the sidebar makes with made-up repositories, people and pull
 requests, timed relative to now, and writes each call to $DEMO_WORK/gh.log: a repository's
-list (`gh pr list`), and the search for yours (`gh api graphql`). Nothing here talks to GitHub.
+list (`gh pr list`), and the search for yours (`gh api graphql`: a light search for ids, then
+the details by id). Nothing here talks to GitHub.
 """
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -81,8 +83,12 @@ def pulls(repo):
     return None
 
 
+def node_id(repo, number):
+    return f"PR_{repo.replace('/', '_')}_{number}"
+
+
 def node(repo, p):
-    """A pull request as GitHub's GraphQL search answers it, from the shape `gh pr list` gives."""
+    """A pull request as GitHub's GraphQL answers it by id, from the shape `gh pr list` gives."""
     contexts = []
     for check in p["statusCheckRollup"]:
         check = dict(check)
@@ -92,6 +98,7 @@ def node(repo, p):
     login = p["author"]["login"]
     return {
         **rest,
+        "id": node_id(repo, p["number"]),
         "author": {"__typename": "Bot" if p["author"]["is_bot"] else "User", "login": login[4:] if login.startswith("app/") else login},
         "repository": {"nameWithOwner": repo},
         "reviewRequests": {"nodes": [{"requestedReviewer": r} for r in p["reviewRequests"]]},
@@ -108,15 +115,21 @@ def field(args, name):
 
 
 def search(args):
-    """Yours: the pull requests the viewer opened, and those asking for their review (with
-    `review-requested`, also those asking a team, as GitHub counts the viewer in every team)."""
+    """Yours. The light search answers the ids of the pull requests the viewer opened, and of those
+    asking for their review (with `review-requested`, also those asking a team, as GitHub counts
+    the viewer in every team); a call with `nodes(ids: [...])` answers their details."""
+    everything = {node_id(repo, p["number"]): (repo, p) for repo in KNOWN for p in (pulls(repo) or [])}
+    asked_for = re.search(r"nodes\(ids: \[(.*?)\]\)", field(args, "query"))
+    if asked_for:
+        ids = json.loads(f"[{asked_for.group(1)}]")
+        return {"data": {"nodes": [node(*everything[i]) if i in everything else None for i in ids]}}
     teams = " review-requested:@me" in field(args, "asked")
-    everything = [(repo, p) for repo in KNOWN for p in (pulls(repo) or [])]
     asks = lambda p: any(r.get("login") == VIEWER or (teams and r["__typename"] == "Team") for r in p["reviewRequests"])
+    ids = lambda keep: {"nodes": [{"id": i} for i, (_, p) in everything.items() if keep(p)]}
     return {"data": {
         "viewer": {"login": VIEWER},
-        "mine": {"nodes": [node(repo, p) for repo, p in everything if p["author"]["login"] == VIEWER]},
-        "asked": {"nodes": [node(repo, p) for repo, p in everything if asks(p)]},
+        "mine": ids(lambda p: p["author"]["login"] == VIEWER),
+        "asked": ids(asks),
     }}
 
 

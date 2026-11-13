@@ -9,9 +9,9 @@ comes from a real repository, project or person.
 **Synthetic:**
 
 - **GitHub.** [bin/gh](bin/gh) stands in for the GitHub CLI. It answers the calls the sidebar
-  makes, a repository's list and the search for yours, with made-up repositories (`acme/web`,
-  `acme/api`, `acme/docs`), people and pull requests, timed relative to now. It never contacts
-  GitHub, and logs each call to `gh.log` in the stage.
+  makes, a repository's list and the two steps of the search for yours, with made-up
+  repositories (`acme/web`, `acme/api`, `acme/docs`), people and pull requests, timed relative
+  to now. It never contacts GitHub, and logs each call to `gh.log` in the stage.
 - **The avatars.** [bin/curl](bin/curl) draws a pattern for each author instead of
   downloading a picture.
 - **The projects.** `~/code/shop` and `~/code/api` are empty folders that the stand-in `gh`

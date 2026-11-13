@@ -7,7 +7,7 @@ requests, grouped by the state of their checks. By default it lists the ones you
 ones waiting on your review, from every repository. It can list every open pull request of the
 repositories you pick instead.
 
-![The Herdr window with the pull request sidebar on the right, titled Your pull requests, 7. Tabs for All, api, docs and web sit under the title. The list is grouped into Failing (1), Running (3), Passing (1) and No checks (1). Each row shows the repository and number, such as api#1203, the title, how long ago it was updated, the author's avatar, tags such as M, New, Needs review, Your review, Ready to merge and Auto-merge, and one small colored square per check. Your own pull requests have an accent line on their left.](preview.png)
+![The Herdr window with the pull request sidebar on the right, titled Your pull requests, 7. Tabs for All, api, docs and web sit under the title. The list is grouped into Failing (1), Running (3), Passing (1) and No checks (1). Each row shows the repository and number, such as api#1203, the title, how long ago it was updated, the author's avatar, tags such as M, New, Needs review, Your review, Ready to merge and Auto-merge, and one small colored square per check.](preview.png)
 
 Your pull requests, the ones waiting on your review and the ones whose checks just broke, in
 one list beside your terminals and agents, refreshed while you work. Click a row to see its
@@ -78,7 +78,7 @@ repositories.
   updated (amber once it's stale). Under that: the author's round avatar (hover it for the
   name), tags, and one square per check, failures first: red failed, amber running
   (pulsing), green passed, an empty outline for skipped. When more checks than fit, the last
-  square becomes a `+n` count. A left accent marks your own pull requests.
+  square becomes a `+n` count.
 - **Tags:** first the size, from lines added plus removed: XS (under 10), S (under 100),
   M (under 500), L (under 1000, amber) and XL (red). Then, most important first: Conflicts,
   Changes requested, Your review (you were asked), Team review (a team you're in was asked,
@@ -98,8 +98,11 @@ repositories.
   back to All. Below 390 px only the active chip shows its count; the others show theirs on
   hover.
 - **Refresh:** every 30 seconds while any checks are running, otherwise every 2 minutes. You
-  can also use the ↻ button, whose tooltip shows when the list was last updated. Yours take one
-  call for every repository. Picked repositories are all asked at once, and if one fails (a
+  can also use the ↻ button, whose tooltip shows when the list was last updated. Yours come
+  from every repository at once. A long list waits longer: the next refresh is at least four
+  times as far off as GitHub took to answer (a hundred review requests to your teams take it
+  about 50 seconds of work, so they refresh every 3 minutes or so), to stay well inside what
+  GitHub lets one account use. Picked repositories are all asked at once, and if one fails (a
   typo, lost access), a banner says what to do, its tab shows a red mark, and the others keep
   listing. If GitHub leaves part of an answer out (an organization that limits what `gh` can
   read), the banner says so, and the rest is listed.
@@ -154,10 +157,14 @@ Props only set the start: once someone chooses in the sidebar, the sidebar's cho
 
 Everything goes through programs you already have; the mod makes no other network requests.
 
-- For yours, one `gh api graphql` call that runs two of GitHub's searches:
+- For yours, `gh api graphql` in two steps. First one call runs two of GitHub's searches,
   `is:pr is:open archived:false author:@me`, and the same with `user-review-requested:@me`
-  (`review-requested:@me` with your teams). It asks for the fields `gh pr list` asks for, and
-  says who you are.
+  (`review-requested:@me` with your teams), for their ids only, and says who you are. Then
+  calls of ten ids each (`nodes(ids: …)`, four at a time) ask for the fields `gh pr list`
+  asks for. Asked for all at once, the details of a hundred pull requests take GitHub past
+  its 10-second limit and it answers 502; ten at a time take it 2 to 7 seconds. A call it
+  still gives up on is asked again in halves. A pull request whose details don't come back
+  keeps the ones it had, and the banner says some couldn't be read.
 - For picked repositories, `gh pr list` for each one, `gh api user` once to learn your login,
   and `gh repo view` to check a repository you add.
 - For the suggestions, once per sidebar: `gh repo view` in each local space's folder, and
@@ -190,7 +197,8 @@ sh docs/demo/record.sh            # the pictures, on a synthetic stage
 ```
 
 - **`mods/github-prs/model.js`** is the data: check dedup, states, sections, filters, tags,
-  repository parsing, which way a sidebar lists, and the search for yours. It imports nothing from Herdr, so Node can test it.
+  repository parsing, which way a sidebar lists, and the two steps of the search for yours.
+  It imports nothing from Herdr, so Node can test it.
 - **`mods/github-prs/main.js`** draws the sidebar and runs `gh`, with Herdr's `herdr` and
   `gpui-kit` modules. `tests/view.test.mjs` runs it against an in-memory builder.
 - **`scripts/install.py`** puts the block in the layout.
