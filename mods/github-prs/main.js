@@ -637,7 +637,8 @@ export default class PullRequests extends View {
         cx.notify();
       })
       .on_click((_e, cx) => this.toggle(this.expanded, pr.id, cx))
-      .child(div().mt(1).flex_none().child(this.stateMark(t, pr.state)))
+      // As tall as the first line, so the mark is centred on it.
+      .child(div().h(18).flex_none().flex().items_center().child(this.stateMark(t, pr.state)))
       .child(v_flex().flex_1().min_w(0).gap(3)
         .child(h_flex().h(18).min_w(0).gap(6).items_center()
           .child(div().flex_none().text_size(11).text_color(t.dim).child(`${this.prefix(pr)}#${pr.number}`))
