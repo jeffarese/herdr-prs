@@ -240,3 +240,98 @@ test("several repositories: rows know theirs, and the scope narrows the list", (
   assert.deepEqual(m.repoCounts(prs, ["acme/api", "acme/web"], "ready"), { "acme/api": 1, "acme/web": 1 });
   assert.equal(m.problems(["A", "B", "A"]), "A\nB");
 });
+
+test("a sidebar lists yours unless it chose repositories, or already has some", () => {
+  assert.equal(m.chosenMode(undefined, {}, undefined), "me", "a new sidebar");
+  assert.equal(m.chosenMode(undefined, {}, ["a/b"]), "repos", "one that picked repositories before there was a choice");
+  assert.equal(m.chosenMode(undefined, { repos: ["a/b"] }, undefined), "repos", "one the layout seeds");
+  assert.equal(m.chosenMode(undefined, {}, []), "me", "one that had removed every repository");
+  assert.equal(m.chosenMode(undefined, { mode: "me", repo: "a/b" }, undefined), "me", "the layout says which");
+  assert.equal(m.chosenMode("repos", { mode: "me" }, []), "repos", "the sidebar's choice wins");
+  assert.equal(m.chosenMode("nonsense", {}, undefined), "me");
+  assert.equal(m.modeKey(undefined), "github-prs.mode.prs");
+  assert.equal(m.withTeams(undefined, {}), false);
+  assert.equal(m.withTeams(undefined, { teams: true }), true);
+  assert.equal(m.withTeams(false, { teams: true }), false);
+});
+
+test("the search asks for yours and for the reviews asked of you, or of your teams too", () => {
+  const args = m.searchArgs(false);
+  assert.deepEqual(args.slice(0, 3), ["api", "graphql", "-f"]);
+  assert.ok(args.includes("mine=is:pr is:open archived:false author:@me"));
+  assert.ok(args.includes("asked=is:pr is:open archived:false user-review-requested:@me"));
+  assert.ok(m.searchArgs(true).includes("asked=is:pr is:open archived:false review-requested:@me"));
+});
+
+// A pull request as the search's GraphQL answers it.
+const found = (repo, number, extra = {}) => ({
+  number, title: `Change ${number}`, url: `https://github.com/${repo}/pull/${number}`, isDraft: false,
+  createdAt: "2026-11-01T10:00:00Z", updatedAt: "2026-11-12T10:00:00Z", headRefName: `feat/${number}`, baseRefName: "main",
+  reviewDecision: "REVIEW_REQUIRED", mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", additions: 3, deletions: 1, changedFiles: 1,
+  author: { __typename: "User", login: "ana" }, repository: { nameWithOwner: repo }, autoMergeRequest: null,
+  reviewRequests: { nodes: [] }, commits: { nodes: [] }, ...extra,
+});
+const search = (mine, asked, errors) => JSON.stringify({ data: { viewer: { login: "me" }, mine: { nodes: mine }, asked: { nodes: asked } }, errors });
+
+test("the search's answer becomes the same pull requests a repository's list gives", () => {
+  const checks = { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    { __typename: "CheckRun", name: "Build", status: "COMPLETED", conclusion: "CANCELLED", startedAt: "2026-11-12T10:00:00Z",
+      completedAt: "2026-11-12T10:01:00Z", detailsUrl: "https://ci/1", checkSuite: { workflowRun: { workflow: { name: "CI" } } } },
+    { __typename: "CheckRun", name: "Build", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-11-12T10:05:00Z",
+      completedAt: "2026-11-12T10:06:00Z", detailsUrl: "https://ci/2", checkSuite: { workflowRun: { workflow: { name: "CI" } } } },
+    { __typename: "CheckRun", name: "Vercel", status: "COMPLETED", conclusion: "SUCCESS", startedAt: "2026-11-12T10:05:00Z",
+      completedAt: "2026-11-12T10:05:00Z", detailsUrl: "https://v", checkSuite: { workflowRun: null } },
+    { __typename: "StatusContext", context: "deploy", state: "PENDING", targetUrl: "https://d", createdAt: "2026-11-12T10:07:00Z" },
+  ] } } } }] };
+  const out = m.parseSearch(search(
+    [found("acme/web", 1, { author: { __typename: "User", login: "me" }, commits: checks, autoMergeRequest: { enabledAt: "x" } }), null],
+    [found("acme/api", 2, { author: { __typename: "Bot", login: "renovate" }, reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] } }),
+      found("acme/web", 1), { }],
+  ));
+  assert.equal(out.viewer, "me");
+  assert.deepEqual(out.errors, []);
+  assert.deepEqual(out.prs.map((p) => p.id), ["acme/web#1", "acme/api#2"], "each once; unreadable and non-pull-request results left out");
+  const [mine, theirs] = out.prs;
+  assert.equal(mine.mine, true);
+  assert.equal(mine.autoMerge, true);
+  assert.equal(mine.superseded, 1, "the cancelled run a newer one replaced");
+  assert.deepEqual(mine.checks.map((c) => [c.workflow, c.name, c.state]), [["", "deploy", "running"], ["CI", "Build", "pass"], ["", "Vercel", "pass"]]);
+  assert.equal(mine.checks[0].started, Date.parse("2026-11-12T10:07:00Z"), "a status's time is when it was posted");
+  assert.equal(mine.state, "running");
+  assert.equal(theirs.bot, true);
+  assert.equal(theirs.author, "renovate");
+  assert.equal(theirs.requested, true);
+  assert.equal(m.parseSearch("not json"), null);
+  assert.equal(m.parseSearch(JSON.stringify({ data: null, errors: [{ message: "boom" }] })), null);
+});
+
+test("a review asked of a team is told apart from one asked of you", () => {
+  const team = { nodes: [{ requestedReviewer: { __typename: "Team", name: "Frontend" } }, { requestedReviewer: { __typename: "User", login: "bo" } }] };
+  const out = m.parseSearch(search([], [found("acme/web", 3, { reviewRequests: team }), found("acme/web", 4, {
+    reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "me" } }] } })]), "", true);
+  const [viaTeam, direct] = out.prs;
+  assert.deepEqual([viaTeam.requested, viaTeam.viaTeam, viaTeam.teams], [false, true, ["Frontend"]]);
+  assert.deepEqual([direct.requested, direct.viaTeam], [true, false]);
+  const now = Date.parse("2026-11-13T12:00:00Z");
+  assert.deepEqual(m.tags(viaTeam, now).map((t) => t.label), ["Team review", "Needs review"]);
+  assert.match(m.tags(viaTeam, now)[0].tip, /asked: Frontend/);
+  assert.deepEqual(m.tags(direct, now).map((t) => t.label), ["Your review", "Needs review"]);
+  const quiet = { ...viaTeam, review: null };
+  assert.deepEqual(m.sections([quiet], "", "review").flatMap((s) => s.prs).map((p) => p.id), ["acme/web#3"], "a team's request waits on you too");
+  // Without the teams option, everything the search for reviews found was asked of you by name.
+  assert.equal(m.parseSearch(search([], [found("acme/web", 3, { reviewRequests: { nodes: [] } })])).prs[0].requested, true);
+});
+
+test("an answer with holes keeps what it has and says what's missing", () => {
+  const saml = "Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.";
+  const out = m.parseSearch(search([found("acme/web", 1), null], [], [{ message: saml }, { message: saml }]));
+  assert.equal(out.prs.length, 1);
+  assert.deepEqual(out.errors, [saml], "each problem once");
+  assert.match(m.explain(saml), /single sign-on/);
+  assert.equal(m.explain("Not Found"), "Not Found", "no repository to blame");
+});
+
+test("the repositories yours are in, by name", () => {
+  const prs = ["zeta/api", "acme/web", "Acme/web", "acme/api"].map((repo, i) => ({ repo, number: i }));
+  assert.deepEqual(m.reposOf(prs), ["acme/api", "zeta/api", "acme/web"]);
+});

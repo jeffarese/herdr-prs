@@ -3,7 +3,8 @@
 
 Herdr's own layouts are read-only, so if one of those is showing, the sidebar goes into a copy of
 `main` called `main-prs`. A personal layout is backed up first. Running this again updates the mod
-and keeps the layout. The sidebar asks which repositories to list the first time it shows.
+and keeps the layout. The sidebar lists your pull requests from every repository; its sliders
+button switches it to the repositories you pick.
 `--remove` takes the sidebar out of every layout and deletes the mod.
 """
 import argparse
@@ -146,7 +147,8 @@ def main():
         return remove(app)
     install_mod(app)
     name = make_layout(app)
-    print(f"Installed. Herdr shows {name} with the pull request sidebar on the right: pick your repositories there.")
+    print(f"Installed. Herdr shows {name} with the pull request sidebar on the right, listing yours from every repository.")
+    print("To list whole repositories instead, use its sliders button.")
     print("Back to Herdr's layout: herdr-app do layout.switch --name main")
 
 

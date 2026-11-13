@@ -47,11 +47,40 @@ export function configured(stored, given) {
   return uniqueRepos(seed);
 }
 
+// Two ways to fill a sidebar. "me": your pull requests from every repository, the ones you opened
+// and the ones waiting on your review. "repos": every open pull request of the repositories picked.
+export const MODES = ["me", "repos"];
+export const modeKey = (block) => `github-prs.mode.${block || "prs"}`;
+// Whether "me" counts review requests made to a team you're in, not only to you by name.
+export const teamsKey = (block) => `github-prs.teams.${block || "prs"}`;
+// Set once the first-run note about "me" has been read, for every sidebar.
+export const INTRO_KEY = "github-prs.intro";
+
+/** How a sidebar lists pull requests. A choice made in the sidebar wins, then the layout's `mode`
+ *  prop. Without either, a sidebar that has repositories (chosen before there was a choice, or
+ *  seeded by the layout) keeps listing them, and any other lists yours. */
+export function chosenMode(stored, given, storedRepos) {
+  if (MODES.includes(stored)) return stored;
+  if (MODES.includes(given?.mode)) return given.mode;
+  return configured(storedRepos, given).length ? "repos" : "me";
+}
+
+/** Whether "me" includes review requests made to your teams: the sidebar's choice, else the
+ *  layout's `teams` prop. Off by default: in a large organization they can be hundreds. */
+export const withTeams = (stored, given) => (typeof stored === "boolean" ? stored : given?.teams === true);
+
 /** The name a repository goes by in the sidebar: its name, or owner/name when two share one. */
 export function shortName(repo, all = []) {
   const name = String(repo).split("/").pop();
   const clash = all.some((other) => !sameRepo(other, repo) && sameRepo(String(other).split("/").pop(), name));
   return clash ? repo : name;
+}
+
+/** The repositories some pull requests are in, once each, by name and then owner: the tabs of
+ *  a sidebar that lists yours, which come and go with the pull requests. */
+export function reposOf(prs) {
+  const key = (repo) => repo.toLowerCase().split("/").reverse().join("/");
+  return uniqueRepos(prs.map((p) => p.repo)).sort((a, b) => key(a).localeCompare(key(b)));
 }
 
 // No activity for this long and a pull request is stale; opened this recently and it's new.
@@ -157,10 +186,16 @@ export function overall(n) {
 
 export const login = (author) => String(author?.login ?? "").replace(/^app\//, "");
 
-export function pullRequest(raw, viewer, repo = "") {
+/** One pull request. `asked` says which search found it, when one did: "you" for the review
+ *  requests made to you by name, "team" for those that include your teams. */
+export function pullRequest(raw, viewer, repo = "", asked = "") {
   const { list, superseded } = latestChecks(raw.statusCheckRollup);
   const counts = tally(list);
   const author = login(raw.author);
+  const reviewers = raw.reviewRequests ?? [];
+  const direct = Boolean(viewer) && reviewers.some((r) => r?.login === viewer);
+  // Found by the search that includes teams, without naming you: asked of a team you're in.
+  const viaTeam = asked === "team" && !direct;
   return {
     id: `${repo}#${raw.number}`,
     repo,
@@ -183,7 +218,9 @@ export function pullRequest(raw, viewer, repo = "") {
     removed: Number(raw.deletions) || 0,
     files: Number(raw.changedFiles) || 0,
     mine: Boolean(viewer) && author === viewer,
-    requested: Boolean(viewer) && (raw.reviewRequests ?? []).some((r) => r?.login === viewer),
+    requested: direct || asked === "you",
+    viaTeam,
+    teams: viaTeam ? reviewers.filter((r) => r?.__typename === "Team" && r.name).map((r) => r.name) : [],
     checks: list,
     superseded,
     counts,
@@ -217,11 +254,79 @@ export function parse(stdout, viewer, repo = "") {
 
 export const listArgs = (repo) => ["pr", "list", "--repo", repo, "--state", "open", "--limit", "100", "--json", FIELDS];
 
-/** What went wrong, in words a person can act on. */
-export function explain(text, repo) {
+// "me" asks GitHub's search twice in one GraphQL call: pull requests you opened, and those waiting
+// on your review. The fields are the ones `gh pr list --json FIELDS` asks for, as gh asks for them.
+export const SEARCH = `query($mine: String!, $asked: String!) {
+  viewer { login }
+  mine: search(query: $mine, type: ISSUE, first: 100) { nodes { ...pr } }
+  asked: search(query: $asked, type: ISSUE, first: 100) { nodes { ...pr } }
+}
+fragment pr on PullRequest {
+  number title url isDraft createdAt updatedAt headRefName baseRefName
+  reviewDecision mergeable mergeStateStatus additions deletions changedFiles
+  author { __typename login }
+  repository { nameWithOwner }
+  autoMergeRequest { enabledAt }
+  reviewRequests(first: 50) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { name } } } }
+  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+    __typename
+    ... on CheckRun { name status conclusion startedAt completedAt detailsUrl checkSuite { workflowRun { workflow { name } } } }
+    ... on StatusContext { context state targetUrl createdAt }
+  } } } } } }
+}`;
+
+// Open pull requests only, and none from archived repositories, as GitHub's own lists do.
+const OPEN = "is:pr is:open archived:false";
+
+/** The search for "me". `review-requested` includes requests made to your teams;
+ *  `user-review-requested` only those made to you by name. */
+export const searchArgs = (teams) => ["api", "graphql", "-f", `query=${SEARCH}`,
+  "-f", `mine=${OPEN} author:@me`, "-f", `asked=${OPEN} ${teams ? "review-requested" : "user-review-requested"}:@me`];
+
+/** A pull request from the search, in the shape `gh pr list --json` gives (gh flattens checks
+ *  the same way), so the rest of the sidebar doesn't know where it came from. */
+export function fromSearch(node) {
+  const contexts = node.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+  return {
+    ...node,
+    author: node.author ? { login: node.author.login, is_bot: node.author.__typename === "Bot" } : null,
+    reviewRequests: (node.reviewRequests?.nodes ?? []).map((r) => r?.requestedReviewer).filter(Boolean),
+    statusCheckRollup: contexts.filter(Boolean).map((c) => (c.__typename === "StatusContext"
+      ? { __typename: c.__typename, context: c.context, state: c.state, targetUrl: c.targetUrl, startedAt: c.createdAt }
+      : { __typename: c.__typename, name: c.name, workflowName: c.checkSuite?.workflowRun?.workflow?.name ?? "",
+        status: c.status, conclusion: c.conclusion, startedAt: c.startedAt, completedAt: c.completedAt, detailsUrl: c.detailsUrl })),
+  };
+}
+
+/** What the search found: who you are, your pull requests and those waiting on you (each once),
+ *  and what GitHub said it couldn't answer. `gh api graphql` exits 1 when part of an answer
+ *  failed and still prints the rest, so whatever came back is kept. Null when nothing did. */
+export function parseSearch(stdout, viewer = "", teams = false) {
+  let body;
+  try { body = JSON.parse(stdout); } catch { return null; }
+  const data = body?.data;
+  if (!data?.mine && !data?.asked) return null;
+  const me = data.viewer?.login || viewer;
+  const found = new Map();
+  for (const [key, asked] of [["mine", ""], ["asked", teams ? "team" : "you"]]) {
+    // A null node is one the token can't read; one without a repository isn't a pull request.
+    for (const node of data[key]?.nodes ?? []) {
+      if (!node?.repository?.nameWithOwner) continue;
+      const pr = pullRequest(fromSearch(node), me, node.repository.nameWithOwner, asked);
+      if (!found.has(pr.id)) found.set(pr.id, pr);
+    }
+  }
+  const errors = [...new Set((body.errors ?? []).map((e) => String(e?.message ?? "").trim()).filter(Boolean))];
+  return { viewer: me, prs: [...found.values()], errors };
+}
+
+/** What went wrong, in words a person can act on. `repo` names the repository that was asked
+ *  about, when one was. */
+export function explain(text, repo = "") {
   const message = String(text ?? "").trim();
   if (/auth login|not logged|authentication|HTTP 401|bad credentials/i.test(message)) return "GitHub CLI isn't signed in. Run gh auth login in a terminal.";
-  if (/could not resolve to a repository|HTTP 404|not found/i.test(message)) return `Can't see ${repo}. Check the name and your access.`;
+  if (/SAML|single sign-on|OAuth App access restrictions/i.test(message)) return "An organization limits what gh can read: authorize GitHub CLI for its single sign-on, or ask an owner to approve it.";
+  if (repo && /could not resolve to a repository|HTTP 404|not found/i.test(message)) return `Can't see ${repo}. Check the name and your access.`;
   if (/ENOENT|no such file|not installed|cannot start|can't start|failed to start|command not found/i.test(message)) return "The GitHub CLI (gh) isn't installed, or isn't on Herdr's PATH.";
   if (/timed? ?out/i.test(message)) return "GitHub didn't answer in time.";
   if (/could not resolve host|network|connection/i.test(message)) return "Can't reach GitHub. Check the connection.";
@@ -246,8 +351,9 @@ const FILTER = {
   all: () => true,
   ready: (p) => !p.draft,
   mine: (p) => p.mine,
-  // Waiting on a reviewer: open for review, not ours, and either asked of us or still unreviewed.
-  review: (p) => !p.draft && !p.mine && (p.requested || p.review === "REVIEW_REQUIRED"),
+  // Waiting on a reviewer: open for review, not ours, and either asked of us (or of our team) or
+  // still unreviewed.
+  review: (p) => !p.draft && !p.mine && (p.requested || p.viaTeam || p.review === "REVIEW_REQUIRED"),
   drafts: (p) => p.draft,
 };
 
@@ -329,6 +435,8 @@ export function tags(pr, now) {
     pr.conflicts && { id: "conflicts", label: "Conflicts", color: "blocked", tip: "Has conflicts with its base branch" },
     !pr.draft && pr.review === "CHANGES_REQUESTED" && { id: "changes", label: "Changes requested", color: "blocked", tip: "A reviewer asked for changes" },
     !pr.draft && !pr.mine && pr.requested && { id: "yours", label: "Your review", color: "accent", tip: "Your review was requested" },
+    !pr.draft && !pr.mine && !pr.requested && pr.viaTeam && { id: "team", label: "Team review", color: "accent", outline: true,
+      tip: `A team you're in was asked to review${pr.teams.length ? ` (asked: ${pr.teams.join(", ")})` : ""}` },
     ready && { id: "ready", label: "Ready to merge", color: "pass", tip: "Approved, checks passing and up to date" },
     pr.merge === "BEHIND" && { id: "behind", label: "Behind", color: "working", outline: true, tip: `Behind ${pr.base || "its base"}: needs an update before merging` },
     pr.autoMerge && { id: "auto", label: "Auto-merge", color: "accent", outline: true, tip: "Merges by itself once it can" },

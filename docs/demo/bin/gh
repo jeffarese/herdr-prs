@@ -2,8 +2,8 @@
 """A stand-in for the GitHub CLI, for the README's pictures.
 
 It answers the few `gh` calls the sidebar makes with made-up repositories, people and pull
-requests, timed relative to now, and writes each call to $DEMO_WORK/gh.log. Nothing here
-talks to GitHub.
+requests, timed relative to now, and writes each call to $DEMO_WORK/gh.log: a repository's
+list (`gh pr list`), and the search for yours (`gh api graphql`). Nothing here talks to GitHub.
 """
 import json
 import os
@@ -35,13 +35,14 @@ def suite(repo, started, overrides=None, names=("lint", "typecheck", "unit (1/3)
 
 
 def pr(repo, number, title, author, branch, updated, created, *, checks=(), draft=False, review="REVIEW_REQUIRED",
-       mergeable="MERGEABLE", merge="BLOCKED", auto=False, add=40, remove=12, files=3, asked=False, bot=False):
+       mergeable="MERGEABLE", merge="BLOCKED", auto=False, add=40, remove=12, files=3, asked=False, bot=False, team=None):
     return {
         "number": number, "title": title, "url": f"https://github.com/{repo}/pull/{number}", "isDraft": draft,
         "author": {"login": f"app/{author}" if bot else author, "is_bot": bot},
         "headRefName": branch, "baseRefName": "main", "createdAt": ago(created), "updatedAt": ago(updated),
         "reviewDecision": review, "mergeable": mergeable, "mergeStateStatus": merge,
-        "statusCheckRollup": list(checks), "reviewRequests": [{"__typename": "User", "login": VIEWER}] if asked else [],
+        "statusCheckRollup": list(checks),
+        "reviewRequests": ([{"__typename": "User", "login": VIEWER}] if asked else []) + ([{"__typename": "Team", "name": team}] if team else []),
         "autoMergeRequest": {} if auto else None, "additions": add, "deletions": remove, "changedFiles": files,
     }
 
@@ -50,14 +51,14 @@ def pulls(repo):
     if repo == "acme/web":
         return [
             pr(repo, 482, "Fix the checkout total when a coupon expires", "mara-lind", "fix/coupon-total", 6, 300,
-               checks=suite(repo, 20, {"e2e": "FAILURE"}), add=86, remove=31, files=5),
+               checks=suite(repo, 20, {"e2e": "FAILURE"}), add=86, remove=31, files=5, team="Frontend"),
             pr(repo, 479, "Lazy-load the product gallery", "devon", "perf/gallery", 3, 1900,
                checks=suite(repo, 8, {"e2e": "running", "build": "running", "preview": "running"}), add=212, remove=95, files=9, asked=True),
             pr(repo, 485, "Add dark mode to the account pages", VIEWER, "feat/account-dark", 2, 90,
                checks=suite(repo, 5, {"unit (2/3)": "running", "unit (3/3)": "running", "e2e": "running"}), add=640, remove=120, files=22),
             pr(repo, 476, "Show delivery estimates on the cart", "kit-o", "feat/delivery-eta", 45, 4000,
                checks=suite(repo, 60), review="APPROVED", merge="CLEAN", add=150, remove=40, files=6),
-            pr(repo, 471, "Upgrade the router to v7", "app/deps-bot", "deps/router-7", 120, 3000,
+            pr(repo, 471, "Upgrade the router to v7", "deps-bot", "deps/router-7", 120, 3000,
                checks=suite(repo, 130), review="REVIEW_REQUIRED", merge="BEHIND", add=8, remove=8, files=2, bot=True, auto=True),
             pr(repo, 468, "Rework search filters", "ruiz", "feat/search-filters", 80, 9000,
                checks=suite(repo, 90), review="CHANGES_REQUESTED", mergeable="CONFLICTING", merge="DIRTY", add=1240, remove=310, files=31),
@@ -68,16 +69,55 @@ def pulls(repo):
         return [
             pr(repo, 1203, "Retry webhook deliveries with backoff", VIEWER, "feat/webhook-retries", 12, 600,
                checks=suite(repo, 25, {"integration": "FAILURE"}, names=("lint", "unit", "integration", "migrations", "build")), add=320, remove=44, files=8),
-            pr(repo, 1199, "Paginate the orders endpoint", "devon", "feat/orders-pages", 30, 2000,
+            pr(repo, 1199, "Paginate the orders endpoint", VIEWER, "feat/orders-pages", 30, 2000,
                checks=suite(repo, 40, names=("lint", "unit", "integration", "migrations", "build")), review="APPROVED", merge="CLEAN", auto=True, add=96, remove=20, files=4),
             pr(repo, 1201, "Rate-limit the public API per key", "mara-lind", "feat/rate-limits", 4, 200,
                checks=suite(repo, 6, {"integration": "running", "build": "running"}, names=("lint", "unit", "integration", "migrations", "build")), add=410, remove=12, files=11, asked=True),
         ]
     if repo == "acme/docs":
         return [
-            pr(repo, 88, "Document the webhook retry policy", "kit-o", "docs/webhook-retries", 20, 500, review="REVIEW_REQUIRED", add=64, remove=3, files=1),
+            pr(repo, 88, "Document the webhook retry policy", "kit-o", "docs/webhook-retries", 20, 500, review="REVIEW_REQUIRED", add=64, remove=3, files=1, asked=True),
         ]
     return None
+
+
+def node(repo, p):
+    """A pull request as GitHub's GraphQL search answers it, from the shape `gh pr list` gives."""
+    contexts = []
+    for check in p["statusCheckRollup"]:
+        check = dict(check)
+        workflow = check.pop("workflowName", "")
+        contexts.append({**check, "checkSuite": {"workflowRun": {"workflow": {"name": workflow}}}})
+    rest = {k: v for k, v in p.items() if k not in ("author", "statusCheckRollup", "reviewRequests")}
+    login = p["author"]["login"]
+    return {
+        **rest,
+        "author": {"__typename": "Bot" if p["author"]["is_bot"] else "User", "login": login[4:] if login.startswith("app/") else login},
+        "repository": {"nameWithOwner": repo},
+        "reviewRequests": {"nodes": [{"requestedReviewer": r} for r in p["reviewRequests"]]},
+        "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": contexts}} if contexts else None}}]},
+    }
+
+
+def field(args, name):
+    """The value of a `-f name=value` argument."""
+    for flag, value in zip(args, args[1:]):
+        if flag == "-f" and value.startswith(name + "="):
+            return value[len(name) + 1:]
+    return ""
+
+
+def search(args):
+    """Yours: the pull requests the viewer opened, and those asking for their review (with
+    `review-requested`, also those asking a team, as GitHub counts the viewer in every team)."""
+    teams = " review-requested:@me" in field(args, "asked")
+    everything = [(repo, p) for repo in KNOWN for p in (pulls(repo) or [])]
+    asks = lambda p: any(r.get("login") == VIEWER or (teams and r["__typename"] == "Team") for r in p["reviewRequests"])
+    return {"data": {
+        "viewer": {"login": VIEWER},
+        "mine": {"nodes": [node(repo, p) for repo, p in everything if p["author"]["login"] == VIEWER]},
+        "asked": {"nodes": [node(repo, p) for repo, p in everything if asks(p)]},
+    }}
 
 
 def out(text):
@@ -100,6 +140,8 @@ if args[:1] == ["api"] and args[1].startswith("user/repos"):
     out("\n".join(["acme/web", "acme/api", "acme/docs", "acme/design-system", "sam/dotfiles"]))
 if args[:1] == ["api"] and args[1].startswith("apps/"):
     out("1001")
+if args[:2] == ["api", "graphql"]:
+    out(json.dumps(search(args)))
 if args[:2] == ["pr", "list"]:
     repo = args[args.index("--repo") + 1]
     found = pulls(repo.lower())

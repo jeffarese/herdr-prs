@@ -69,8 +69,9 @@ printf 'PROMPT="%%F{cyan}%%~%%f %%F{magenta}❯%%f "\nunsetopt beep\n' >> "$HOME
 
 herdr-core server start >/dev/null
 
-# A home that has seen the welcome, with the side panels closed, and that reports nothing.
-printf '{"frame.welcomed":"skipped","workspace.panels":[]}\n' > "$HERDR_APP_HOME/shared.json"
+# A home that has seen the welcome (and the sidebar's first-run note), with the side panels
+# closed, and that reports nothing.
+printf '{"frame.welcomed":"skipped","workspace.panels":[],"github-prs.intro":true}\n' > "$HERDR_APP_HOME/shared.json"
 printf '{"telemetry":false,"sounds":{"enabled":false}}\n' > "$HERDR_APP_HOME/settings.json"
 printf '{"state":"windowed","bounds":[80.0,60.0,1360.0,860.0]}\n' > "$HERDR_APP_HOME/window.json"
 # And that has run this version before, so it doesn't announce an update.
