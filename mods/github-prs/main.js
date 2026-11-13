@@ -6,6 +6,7 @@ import {
   DELAY, FILTERS, VIEWS, parse, listArgs, explain, nextDelay, sections, counts, stateCounts,
   duration, clock, took, opener, avatarFile, initials, strip, tags, size, isStale,
   parseRepo, uniqueRepos, sameRepo, repoKey, configured, shortName, inScope, repoCounts, problems,
+  chosenMode, withTeams, modeKey, teamsKey, INTRO_KEY, searchArgs, parseSearch, reposOf,
 } from "./model.js";
 
 const ART = "mods/github-prs/";
@@ -31,6 +32,12 @@ const STATE_WORD = { failing: "Checks failing", running: "Checks running", passi
 const SUGGEST = 8;
 const SPACE_FOLDERS = 12;
 const EMPTY = { ready: "Every open pull request is a draft", mine: "Nothing of yours is open", review: "Nothing is waiting for review", drafts: "No open drafts" };
+// What "me" lists under, beside the repositories: one search covers every repository.
+const ME = "@me";
+const ABOUT = {
+  me: "Pull requests you opened or were asked to review, from every repository.",
+  repos: "Every open pull request in the repositories you pick.",
+};
 // Per-copy conveniences only (folded sections, the width to expand back to). Storage can be missing or throw.
 const store = {
   get(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } },
@@ -43,9 +50,12 @@ export default class PullRequests extends View {
     this.given = props() ?? {};
     this.block = this.given.block || "prs";
     this.key = repoKey(this.block);
-    // repo → its last good list, and repo → what went wrong the last time it was asked for.
+    // What was asked for (a repository, or ME) → its last good list, and → what went wrong the
+    // last time it was asked for. A source in `partial` answered, but not all of it.
     this.lists = new Map();
     this.errors = new Map();
+    this.partial = new Set();
+    this.derived = null;
     this.loading = false;
     this.again = false;
     this.fetched = null;
@@ -83,14 +93,39 @@ export default class PullRequests extends View {
     this.suggestions = null;
     this.suggesting = false;
     this.refresh(cx);
-    // A sidebar with nothing to list opens on the panel, so start looking for suggestions.
-    // A sidebar with nothing to list opens on the panel, so start looking for suggestions.
-    if (!this.repos().length) this.suggest(cx);
+    // A sidebar that lists repositories and has none opens on the panel: look for suggestions.
+    if (this.mode() === "repos" && !this.repos().length) this.suggest(cx);
   }
 
-  // The list lives in Herdr's shared state, so every copy of this block sees an edit at once.
+  // "me" (yours, from every repository) or "repos" (the ones picked). Like the list, the choice
+  // lives in Herdr's shared state, so every copy of this block sees a change at once.
+  mode() {
+    return chosenMode(shared(modeKey(this.block)), this.layoutProps(), shared(this.key));
+  }
+
+  // Whether "me" includes the reviews asked of your teams.
+  teams() {
+    return withTeams(shared(teamsKey(this.block)), this.layoutProps());
+  }
+
+  // What a refresh asks for: the one search, or each repository.
+  sources() {
+    return this.mode() === "me" ? [ME] : this.repos();
+  }
+
+  // The repositories picked. The list lives in Herdr's shared state, so every copy of this block
+  // sees an edit at once.
   repos() {
     return configured(shared(this.key), this.layoutProps());
+  }
+
+  // The repositories on screen, for tabs and row names: the ones picked, or the ones your pull
+  // requests are in.
+  shownRepos() {
+    if (this.mode() === "repos") return this.repos();
+    const list = this.lists.get(ME) ?? [];
+    if (this.derived?.list !== list) this.derived = { list, repos: reposOf(list) };
+    return this.derived.repos;
   }
 
   // The layout's props, read each time: editing the layout changes them under a running copy.
@@ -100,29 +135,63 @@ export default class PullRequests extends View {
 
   saveRepos(list) {
     const repos = uniqueRepos(list);
+    // Editing the list is choosing it: removing the last one doesn't turn the sidebar to yours.
+    setShared(modeKey(this.block), "repos");
     // Adding the first one from the first-time panel keeps the panel open, for more.
     if (!this.repos().length && repos.length) this.setup = true;
     setShared(this.key, repos);
-    for (const repo of [...this.lists.keys()]) if (!repos.some((r) => sameRepo(r, repo))) { this.lists.delete(repo); this.errors.delete(repo); }
+    for (const repo of [...this.lists.keys()]) {
+      if (repo !== ME && !repos.some((r) => sameRepo(r, repo))) { this.lists.delete(repo); this.errors.delete(repo); this.partial.delete(repo); }
+    }
     if (this.scope !== "all" && !repos.some((r) => sameRepo(r, this.scope))) this.setScope("all");
     return repos;
   }
 
-  // Every listed repository's open pull requests, from the last good fetch of each. null until
-  // the first answer, so the list can say it's loading.
+  // Switching keeps the other way's settings, so the repositories picked are there to come back
+  // to. The panel stays open: picking repositories, or the teams option, comes next.
+  chooseMode(next, cx) {
+    this.dismissIntro();
+    const was = this.mode();
+    setShared(modeKey(this.block), next);
+    this.setup = true;
+    if (next === was) { cx.notify(); return; }
+    this.cancelEdit();
+    this.setScope("all");
+    if (next === "repos") this.suggest(cx);
+    this.refresh(cx);
+    cx.notify();
+  }
+
+  setTeams(on, cx) {
+    setShared(teamsKey(this.block), on);
+    this.refresh(cx);
+    cx.notify();
+  }
+
+  // The first-run note in "me", until it's dismissed or the panel is opened: once for every sidebar.
+  showIntro() {
+    return this.mode() === "me" && !shared(INTRO_KEY);
+  }
+
+  dismissIntro() {
+    if (!shared(INTRO_KEY)) setShared(INTRO_KEY, true);
+  }
+
+  // Every source's open pull requests, from the last good answer of each. null until the first
+  // answer, so the list can say it's loading.
   get prs() {
-    const repos = this.repos();
-    if (!repos.some((r) => this.lists.has(r))) return null;
-    return repos.flatMap((r) => this.lists.get(r) ?? []);
+    const sources = this.sources();
+    if (!sources.some((s) => this.lists.has(s))) return null;
+    return sources.flatMap((s) => this.lists.get(s) ?? []);
   }
 
   get error() {
-    const repos = this.repos();
-    return problems(repos.filter((r) => this.errors.has(r)).map((r) => this.errors.get(r))) || null;
+    const sources = this.sources();
+    return problems(sources.filter((s) => this.errors.has(s)).map((s) => this.errors.get(s))) || null;
   }
 
-  // The scope, if its repository is still listed.
-  currentScope(repos = this.repos()) {
+  // The scope, if its repository is still on screen.
+  currentScope(repos = this.shownRepos()) {
     return this.scope !== "all" && repos.some((r) => sameRepo(r, this.scope)) ? this.scope : "all";
   }
 
@@ -138,22 +207,23 @@ export default class PullRequests extends View {
     cx.notify();
   }
 
-  title(repos = this.repos()) {
+  title(repos = this.shownRepos()) {
     const scope = this.currentScope(repos);
     if (scope !== "all") return shortName(scope, repos);
     if (this.layoutProps().title) return this.layoutProps().title;
+    if (this.mode() === "me") return "Your pull requests";
     return repos.length === 1 ? shortName(repos[0]) : "Pull requests";
   }
 
   // One fetch at a time; each one schedules the next, sooner while checks are running.
-  // All the repositories are asked at once; one that fails keeps its last list and doesn't hold
-  // up the others. A refresh asked for mid-fetch (a repository was just added) runs right after.
+  // All the sources are asked at once; one that fails keeps its last list and doesn't hold up
+  // the others. A refresh asked for mid-fetch (a repository was just added) runs right after.
   refresh(cx) {
     if (this.loading) { this.again = true; return; }
     this.pending?.cancel?.();
     this.pending = null;
-    const repos = this.repos();
-    if (!repos.length) {
+    const sources = this.sources();
+    if (!sources.length) {
       // Nothing to list: look again now and then, in case another copy got a list.
       this.pending = cx.timer.after(DELAY.settled, (cx) => this.refresh(cx));
       cx.notify();
@@ -162,10 +232,13 @@ export default class PullRequests extends View {
     this.loading = true;
     cx.notify();
     cx.spawn(async (cx) => {
-      if (!this.viewer) this.viewer = await this.whoami();
-      const answers = await Promise.all(repos.map((repo) => this.fetch(repo)));
-      for (const [repo, prs, error] of answers) {
-        if (prs) { this.lists.set(repo, prs); this.errors.delete(repo); } else this.errors.set(repo, error);
+      // The search says who you are in its own answer; a repository's list needs asking.
+      if (!this.viewer && sources.some((s) => s !== ME)) this.viewer = await this.whoami();
+      const answers = await Promise.all(sources.map((source) => (source === ME ? this.fetchMine() : this.fetch(source))));
+      for (const [source, prs, error] of answers) {
+        if (prs) this.lists.set(source, prs);
+        if (error) this.errors.set(source, error); else this.errors.delete(source);
+        if (prs && error) this.partial.add(source); else this.partial.delete(source);
       }
       if (answers.some(([, prs]) => prs)) this.fetched = Date.now();
       const failed = answers.some(([, prs]) => !prs);
@@ -186,6 +259,21 @@ export default class PullRequests extends View {
       return [repo, parse(result.stdout, this.viewer, repo), null];
     } catch (error) {
       return [repo, null, explain(error?.message ?? error, repo)];
+    }
+  }
+
+  // Yours, from every repository: the pull requests you opened and those waiting on your review,
+  // in one call. An answer with holes (an organization that limits what gh reads) is still listed.
+  async fetchMine() {
+    const teams = this.teams();
+    try {
+      const result = await exec("gh", searchArgs(teams), { timeout: 60_000 });
+      const found = parseSearch(result.stdout, this.viewer, teams);
+      if (!found) throw new Error(result.stderr || result.stdout || `gh exited with ${result.code}`);
+      if (found.viewer) this.viewer = found.viewer;
+      return [ME, found.prs, found.errors.length ? `Some pull requests couldn't be read. ${explain(found.errors[0])}` : null];
+    } catch (error) {
+      return [ME, null, explain(error?.message ?? error)];
     }
   }
 
@@ -256,7 +344,10 @@ export default class PullRequests extends View {
   openSetup(open, cx) {
     this.setup = open;
     if (!open) this.cancelEdit();
-    if (open) this.suggest(cx);
+    if (open) {
+      this.dismissIntro();
+      if (this.mode() === "repos") this.suggest(cx);
+    }
     cx.notify();
   }
 
@@ -460,10 +551,12 @@ export default class PullRequests extends View {
       .when(more > 0, (el) => el.child(div().ml(2).text_size(10).text_color(t.dim).child(`+${more}`)));
   }
 
-  // In a list of several repositories, which one a row is from.
+  // In a list of several repositories, which one a row is from. Yours always say: the title
+  // doesn't name a repository.
   prefix(pr) {
-    const repos = this.repos();
-    return repos.length > 1 && this.currentScope(repos) === "all" ? shortName(pr.repo, repos) : "";
+    const repos = this.shownRepos();
+    const several = this.mode() === "me" || repos.length > 1;
+    return several && this.currentScope(repos) === "all" ? shortName(pr.repo, repos) : "";
   }
 
   describe(pr, now) {
@@ -594,7 +687,9 @@ export default class PullRequests extends View {
   }
 
   banner(t) {
-    const when = this.prs && this.fetched ? ` Showing the list from ${clock(this.fetched)}.` : "";
+    // An answer with holes is still today's list; only a failed one leaves an older list showing.
+    const failed = this.sources().some((s) => this.errors.has(s) && !this.partial.has(s));
+    const when = failed && this.prs && this.fetched ? ` Showing the list from ${clock(this.fetched)}.` : "";
     return h_flex().id("error").flex_none().mx(10).mb(6).px(9).py(7).gap(8).rounded(7).items_start().bg(t.blocked + "1f")
       .child(div().mt(1).flex_none().child(glyph("fail", 13).text_color(t.blocked)))
       .child(div().flex_1().min_w(0).text_size(11.5).text_color(t.foreground).child(`${this.error}${when}`))
@@ -604,11 +699,12 @@ export default class PullRequests extends View {
   rail(t) {
     const n = stateCounts(sections(this.prs ?? [], "", this.filter, this.currentScope()).flatMap((s) => s.prs));
     const title = this.title();
+    const what = /pull requests$/i.test(title) ? title.charAt(0).toLowerCase() + title.slice(1) : `${title} pull requests`;
     const item = (state, word) => n[state] ? v_flex().id(`rail-${state}`).flex_none().items_center().gap(3).py(4)
       .tooltip(`${n[state]} ${word}`).accessibility_label(`${n[state]} ${word}`)
       .child(this.stateMark(t, state, 15)).child(div().text_size(10.5).text_color(t.muted).child(String(n[state]))) : null;
     return [
-      this.iconButton(t, "expand", "chevron-left", `Show ${title === "Pull requests" ? "pull requests" : `${title} pull requests`}`, () => this.expand()).mt(8),
+      this.iconButton(t, "expand", "chevron-left", `Show ${what}`, () => this.expand()).mt(8),
       div().id("rail-repo").mt(4).flex_none().tooltip(`${title}: ${inScope(this.prs ?? [], this.currentScope()).length} open`).child(glyph("pr", 16).text_color(t.accent)),
       ...[item("failing", "failing"), item("running", "running"), item("passing", "passing")].filter(Boolean),
       this.error ? div().id("rail-error").flex_none().tooltip(this.error).child(glyph("fail", 13).text_color(t.blocked)) : null,
@@ -627,11 +723,16 @@ export default class PullRequests extends View {
       }
     }
     if (children.length) return children;
+    const me = this.mode() === "me";
+    // Nothing open at all says so, whichever chip is on: a filter can't be what hid it.
+    const none = Boolean(this.prs) && !inScope(this.prs, this.currentScope()).length;
     const message = !this.prs ? (this.loading ? "Loading pull requests…" : "")
+      : none ? (me ? "Nothing of yours is open, and no review is waiting on you" : "No open pull requests")
       : this.query.trim() ? "No matching pull requests"
-      : this.filter !== "all" ? EMPTY[this.filter]
-      : "No open pull requests";
-    const hint = !this.prs ? "" : this.query.trim() ? "Try a number, title, author or branch."
+      : EMPTY[this.filter] ?? "No open pull requests";
+    const hint = !this.prs ? ""
+      : none ? (me && !this.teams() ? "Reviews asked of your teams aren't included. The sliders button changes that." : "")
+      : this.query.trim() ? "Try a number, title, author or branch."
       : this.filter !== "all" ? "Choose All to see every open one." : "";
     return message ? [v_flex().px(14).py(24).gap(6)
       .child(div().text_size(12).child(message))
@@ -653,7 +754,20 @@ export default class PullRequests extends View {
       .role("tab_list").accessibility_label("Repositories")
       .child(tab("scope-all", "All", total, scope === "all", "Every repository", "", (cx) => { this.setScope("all"); cx.notify(); }))
       .children(repos.map((repo, i) => tab(`scope-${i}`, shortName(repo, repos), tally[repo] ?? 0, sameRepo(scope, repo), repo,
-        this.lists.has(repo) ? "" : this.errors.get(repo) ?? "", (cx) => this.chooseScope(repo, cx))));
+        this.lists.has(repo) || this.mode() === "me" ? "" : this.errors.get(repo) ?? "", (cx) => this.chooseScope(repo, cx))));
+  }
+
+  // The first time a sidebar lists yours: what it shows, and the way to the other choice. The
+  // link makes that choice and opens the panel on it, where Yours is one click back.
+  intro(t) {
+    return h_flex().id("intro").flex_none().mx(10).mb(6).pl(10).pr(4).py(7).gap(6).rounded(7).items_start().bg(t.accent + "14")
+      .role("note").accessibility_label(`${ABOUT.me} The sliders button changes what's listed.`)
+      .child(v_flex().flex_1().min_w(0).gap(3)
+        .child(div().text_size(11.5).text_color(t.foreground).child(ABOUT.me))
+        .child(div().id("intro-repos").flex_none().text_size(11).text_color(t.accent).cursor_pointer().role("button")
+          .accessibility_label("List whole repositories instead").hover((s) => s.opacity(0.8))
+          .on_click((_e, cx) => this.chooseMode("repos", cx)).child("List whole repositories instead")))
+      .child(this.smallButton(t, "intro-close", "x", "Got it", (cx) => { this.dismissIntro(); cx.notify(); }));
   }
 
   smallButton(t, id, icon, tip, action) {
@@ -664,10 +778,46 @@ export default class PullRequests extends View {
       .child(glyph(icon, 12));
   }
 
-  // Where the repositories are chosen: on its own the first time, and from the header's button
-  // after that. A box to add one (or rename one), the list with edit and remove, and suggestions.
+  // One of the two ways to list, as a radio button: a ring with a dot when chosen.
+  modeOption(t, id, label, on) {
+    return h_flex().id(`mode-${id}`).flex_none().min_w(0).px(10).py(8).gap(9).rounded(7).items_start()
+      .role("radio_button").aria_selected(on).accessibility_label(`${label}: ${ABOUT[id]}`)
+      .border(1).border_color(on ? t.accent : t.border)
+      .when(on, (el) => el.bg(t.selected))
+      .when(!on, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)))
+      .on_click((_e, cx) => this.chooseMode(id, cx))
+      .child(div().mt(1).size(14).flex_none().rounded_full().border(1.5).border_color(on ? t.accent : t.dim)
+        .flex().items_center().justify_center()
+        .when(on, (el) => el.child(div().size(6).rounded_full().bg(t.accent))))
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(div().text_size(12).font_medium().child(label))
+        .child(div().text_size(11).text_color(t.muted).child(ABOUT[id])));
+  }
+
+  // The option of "me": the reviews asked of your teams, besides those asked of you.
+  teamsOption(t) {
+    const on = this.teams();
+    const label = "Include reviews asked of your teams";
+    return h_flex().id("teams").flex_none().min_w(0).px(10).py(7).gap(9).rounded(6).items_start()
+      .role("check_box").aria_selected(on).accessibility_label(label)
+      .cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => this.setTeams(!on, cx))
+      .child(div().mt(1).size(14).flex_none().rounded(3).border(1.5).border_color(on ? t.accent : t.dim)
+        .flex().items_center().justify_center()
+        .when(on, (el) => el.bg(t.accent).child(glyph("check", 11).text_color(t.background))))
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(div().text_size(12).child(label))
+        .child(div().text_size(11).text_color(t.muted).child(on
+          ? "Requests to any team you're in are listed too, tagged Team review."
+          : "Only reviews asked of you by name. In a large organization, team requests can run to hundreds.")));
+  }
+
+  // Where the sidebar is told what to list: yours, from every repository, or the repositories
+  // picked. It opens from the header's button, and by itself when repositories are the choice
+  // and none are picked. For repositories: a box to add one (or rename one), the list with edit
+  // and remove, and suggestions.
   setupPanel(t, repos) {
-    const first = !repos.length;
+    const mode = this.mode();
     const label = this.adding ? "Checking…" : this.editing ? "Save" : "Add";
     const heading = (text) => div().pt(6).text_size(10.5).font_medium().text_color(t.dim).child(text);
     const submit = h_flex().id("add-repo").h(22).flex_none().px(9).gap(5).rounded(5).items_center()
@@ -705,22 +855,26 @@ export default class PullRequests extends View {
       .on_click((_e, cx) => this.addSuggestion(repo, cx))
       .child(glyph("plus", 13))
       .child(div().flex_1().min_w(0).truncate().text_size(12).child(repo)));
+    const picking = mode === "repos";
     return v_flex().id("setup").flex_1().min_h(0).px(10).pt(2).pb(12).gap(4).overflow_y_scrollbar()
       .child(v_flex().px(4).pb(6).gap(4)
-        .child(div().text_size(first ? 14 : 12.5).font_semibold().child(first ? "Choose repositories" : "Repositories"))
-        .child(div().text_size(11.5).text_color(t.muted).child(first
-          ? "The sidebar lists the open pull requests of the GitHub repositories you pick here, with the state of their checks. You can change them at any time."
-          : "Open pull requests from these repositories are listed, in this order.")))
-      .child(field)
-      .when(Boolean(this.addError), (el) => el.child(div().px(4).text_size(11).text_color(t.blocked).child(this.addError)))
-      .when(Boolean(this.editing), (el) => el.child(h_flex().px(4).gap(4).items_center().text_size(11).text_color(t.muted)
-        .child(`Renaming ${this.editing}.`).child(this.textLink(t, "cancel-edit", "Cancel", (cx) => { this.cancelEdit(); cx.notify(); }))))
-      .when(repos.length > 0, (el) => el.child(heading(`Listed · ${repos.length}`)).children(listed))
-      .when(this.suggesting || offered.length > 0, (el) => el.child(heading("Suggested: your spaces and recent pushes")))
-      .when(this.suggesting && !offered.length, (el) => el.child(h_flex().px(8).h(28).gap(8).items_center().text_size(11.5).text_color(t.muted)
-        .child(glyph("spinner", 12).spin(900)).child("Looking for your repositories…")))
-      .children(suggestions)
-      .when(repos.length > 0, (el) => el.child(h_flex().pt(8).px(4).child(div().flex_1())
+        .child(div().text_size(13).font_semibold().child("What to list"))
+        .child(div().text_size(11.5).text_color(t.muted).child("Open pull requests, with the state of their checks. You can change this at any time.")))
+      .child(v_flex().id("modes").flex_none().gap(6).role("radio_group").accessibility_label("What to list")
+        .child(this.modeOption(t, "me", "Yours", mode === "me"))
+        .child(this.modeOption(t, "repos", "Repositories", picking)))
+      .child(div().h(6).flex_none())
+      .when(!picking, (el) => el.child(this.teamsOption(t)))
+      .when(picking, (el) => el.child(field)
+        .when(Boolean(this.addError), (el) => el.child(div().px(4).text_size(11).text_color(t.blocked).child(this.addError)))
+        .when(Boolean(this.editing), (el) => el.child(h_flex().px(4).gap(4).items_center().text_size(11).text_color(t.muted)
+          .child(`Renaming ${this.editing}.`).child(this.textLink(t, "cancel-edit", "Cancel", (cx) => { this.cancelEdit(); cx.notify(); }))))
+        .when(repos.length > 0, (el) => el.child(heading(`Listed · ${repos.length}`)).children(listed))
+        .when(this.suggesting || offered.length > 0, (el) => el.child(heading("Suggested: your spaces and recent pushes")))
+        .when(this.suggesting && !offered.length, (el) => el.child(h_flex().px(8).h(28).gap(8).items_center().text_size(11.5).text_color(t.muted)
+          .child(glyph("spinner", 12).spin(900)).child("Looking for your repositories…")))
+        .children(suggestions))
+      .when(!picking || repos.length > 0, (el) => el.child(h_flex().pt(8).px(4).child(div().flex_1())
         .child(h_flex().id("setup-done").h(26).px(12).rounded(6).items_center().role("button").accessibility_label("Done")
           .cursor_pointer().bg(t.selected).text_size(11.5).font_medium().hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => this.openSetup(false, cx)).child("Done"))));
@@ -730,14 +884,23 @@ export default class PullRequests extends View {
     const t = /** @type {Record<string, import("gpui-kit").Color>} */ (theme());
     const compact = this.width < RAIL;
     const now = Date.now();
-    const repos = this.repos();
+    const mode = this.mode();
+    const me = mode === "me";
+    // The repositories picked, and the ones on screen: the same, unless the sidebar lists yours.
+    const picked = this.repos();
+    const repos = this.shownRepos();
     const scope = this.currentScope(repos);
     const all = this.prs ?? [];
     const scoped = inScope(all, scope);
-    const setup = this.setup || !repos.length;
+    // There's a list to show, or the panel is all there is: repositories are the choice, and none are picked.
+    const listing = me || picked.length > 0;
+    const setup = this.setup || !listing;
     const title = this.title(repos);
-    // One repository on screen: the title opens its pull requests. Several: it names them.
-    const one = scope !== "all" ? scope : repos.length === 1 ? repos[0] : null;
+    // One repository on screen: the title opens its pull requests. Several: it names them. Yours:
+    // it opens GitHub's own list of them.
+    const one = scope !== "all" ? scope : !me && repos.length === 1 ? repos[0] : null;
+    const link = one ? { url: `https://github.com/${one}/pulls`, tip: `${one} · open on GitHub`, label: `Open ${one} pull requests on GitHub` }
+      : me ? { url: "https://github.com/pulls", tip: `${ABOUT.me}\nOpen on GitHub`, label: "Open your pull requests on GitHub" } : null;
     const tip = this.loading ? "Refreshing…" : this.fetched ? `Updated ${clock(this.fetched)} · Refresh` : "Refresh";
     const root = v_flex().id("github-prs").size_full().min_h(0).bg(t.chrome).text_color(t.foreground)
       .track_focus(this.handle)
@@ -748,7 +911,7 @@ export default class PullRequests extends View {
       .on_key_down((e, cx) => {
         if (e.key !== "escape") return;
         if (setup && this.editing) { this.cancelEdit(); cx.notify(); }
-        else if (this.setup && repos.length) this.openSetup(false, cx);
+        else if (this.setup && listing) this.openSetup(false, cx);
         else if (this.query) this.clearSearch(cx);
         else return;
         cx.stop_propagation();
@@ -757,26 +920,28 @@ export default class PullRequests extends View {
     const header = h_flex().h(40).flex_none().pl(14).pr(8).gap(8).items_center()
       .child(glyph("pr", 15).text_color(t.accent))
       .child(div().id("repo").min_w(0).truncate().font_semibold().text_size(14)
-        .when(Boolean(one), (el) => el.cursor_pointer().role("link").accessibility_label(`Open ${one} pull requests on GitHub`)
-          .tooltip(`${one} · open on GitHub`).hover((s) => s.text_color(t.accent))
-          .on_click((_e, cx) => this.visit(`https://github.com/${one}/pulls`, cx)))
-        .when(!one && repos.length > 1, (el) => el.tooltip(repos.join("\n")))
+        .when(Boolean(link), (el) => el.cursor_pointer().role("link").accessibility_label(link.label)
+          .tooltip(link.tip).hover((s) => s.text_color(t.accent))
+          .on_click((_e, cx) => this.visit(link.url, cx)))
+        .when(!link && repos.length > 1, (el) => el.tooltip(repos.join("\n")))
         .child(title))
       .child(div().flex_none().text_size(12).text_color(t.muted).child(this.prs && !setup ? String(scoped.length) : ""))
       .child(div().flex_1())
-      .when(repos.length > 0, (el) => el
-        .child(this.iconButton(t, "repos", "sliders", this.setup ? "Back to the list" : "Choose repositories", (cx) => this.openSetup(!this.setup, cx))
+      .when(listing, (el) => el
+        .child(this.iconButton(t, "repos", "sliders", this.setup ? "Back to the list" : "Choose what to list", (cx) => this.openSetup(!this.setup, cx))
           .when(this.setup, (b) => b.bg(t.selected).text_color(t.foreground)))
         .child(this.iconButton(t, "refresh", "refresh", tip, (cx) => this.refresh(cx), this.loading)))
       .child(this.iconButton(t, "collapse", "chevron-right", "Fold to a rail", () => this.collapse()));
-    if (setup) return root.child(header).child(this.setupPanel(t, repos));
+    if (setup) return root.child(header).child(this.setupPanel(t, picked));
     return root.child(header)
       .when(repos.length > 1, (el) => el.child(this.repoTabs(t, repos, all)))
+      .when(this.showIntro(), (el) => el.child(this.intro(t)))
       .child(this.search(t))
       .child(this.chips(t, counts(scoped)))
       .when(Boolean(this.error), (el) => el.child(this.banner(t)))
       .child(v_flex().id("pr-list").flex_1().min_h(0).px(6).pt(2).pb(12).overflow_y_scrollbar().track_scroll(this.scroll)
-        .role("list").accessibility_label(`Open pull requests in ${one ?? repos.join(", ")}, by check state`)
+        .role("list").accessibility_label(me && !one ? "Your open pull requests and the reviews asked of you, by check state"
+          : `Open pull requests in ${one ?? repos.join(", ")}, by check state`)
         .children(this.list(t, now)));
   }
 }

@@ -22,7 +22,22 @@ const LIST = [
   },
 ];
 
-function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, width = 340, store = {}, folders = [], repos = {}, lists = {}, failing = [], cached = [], curl = 0, stored = { filter: JSON.stringify("all") } } = {}) {
+// A pull request as GitHub's search answers it in GraphQL, from the shape `gh pr list` gives.
+const node = (repo, p) => ({
+  number: p.number, title: p.title, url: p.url, isDraft: p.isDraft, createdAt: p.createdAt ?? null, updatedAt: p.updatedAt,
+  headRefName: p.headRefName, baseRefName: p.baseRefName, reviewDecision: p.reviewDecision, mergeable: p.mergeable,
+  mergeStateStatus: p.mergeStateStatus ?? null, additions: 0, deletions: 0, changedFiles: 0, autoMergeRequest: null,
+  author: { __typename: p.author.is_bot ? "Bot" : "User", login: p.author.login.replace(/^app\//, "") }, repository: { nameWithOwner: repo },
+  reviewRequests: { nodes: (p.reviewRequests ?? []).map((r) => ({ requestedReviewer: r })) },
+  commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: (p.statusCheckRollup ?? []).map(({ workflowName, ...c }) =>
+    ({ ...c, checkSuite: { workflowRun: { workflow: { name: workflowName } } } })) } } } }] },
+});
+// Yours: your pull request in o/r, and one in acme/web that asks for your review.
+const ASKED = { ...LIST[1], number: 3, isDraft: false, url: "https://github.com/acme/web/pull/3", reviewRequests: [{ __typename: "User", login: "me" }] };
+const answer = (mine, asked, errors) => JSON.stringify({ data: { viewer: { login: "me" }, mine: { nodes: mine }, asked: { nodes: asked } }, ...(errors ? { errors } : {}) });
+const SEARCH = { code: 0, stdout: answer([node("o/r", LIST[0])], [node("acme/web", ASKED)]), stderr: "" };
+
+function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, width = 340, store = {}, folders = [], repos = {}, lists = {}, failing = [], cached = [], curl = 0, stored = { filter: JSON.stringify("all") }, search = () => SEARCH } = {}) {
   const execs = [];
   const commands = [];
   const notes = [];
@@ -67,6 +82,7 @@ function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, wi
       }
       if (command === "gh" && args[0] === "pr" && lists[args[3]]) return { code: 0, stdout: JSON.stringify(lists[args[3]]), stderr: "" };
       if (command === "gh" && args[0] === "pr" && failing.includes(args[3])) return { code: 1, stdout: "", stderr: "HTTP 404: Not Found" };
+      if (command === "gh" && args[0] === "api" && args[1] === "graphql") return search(args);
       if (command === "gh" && args[0] === "api") return { code: 0, stdout: "me\n", stderr: "" };
       if (command === "gh") return { code, stdout: code ? "" : JSON.stringify(list), stderr };
       if (command === "curl") return { code: curl, stdout: "", stderr: "" };
@@ -298,13 +314,15 @@ test("a narrow sidebar shows only the active chip's count", async () => {
   assert.deepEqual(texts(find(root, "filter-all")), ["All", "2"]);
 });
 
-test("with no repositories it opens on the panel and suggests the spaces' and recent ones", async () => {
-  const h = setup({ given: {}, folders: [{ folder: "/code/shop", repo: "acme/shop" }, { folder: "/code/api", repo: "acme/api" }] });
+test("listing repositories with none picked opens on the panel and suggests the spaces' and recent ones", async () => {
+  const h = setup({ given: { mode: "repos" }, folders: [{ folder: "/code/shop", repo: "acme/shop" }, { folder: "/code/api", repo: "acme/api" }] });
   await h.settle();
-  assert.equal(h.execs.filter((e) => e[1] === "pr").length, 0, "nothing to list, nothing asked");
+  assert.equal(h.execs.filter((e) => e[0] === "gh" && (e[1] === "pr" || e[2] === "graphql")).length, 0, "nothing to list, nothing asked");
   const root = h.view.render();
   assert.ok(find(root, "setup"));
-  assert.ok(texts(root).includes("Choose repositories"));
+  assert.ok(texts(root).includes("What to list"));
+  assert.equal(find(root, "mode-repos").props.aria_selected, true);
+  assert.equal(find(root, "repos"), null, "no list to go back to");
   assert.equal(find(root, "search"), null);
   assert.equal(find(root, "setup-done"), null, "nothing to go back to");
   const offered = [0, 1, 2, 3].map((i) => find(root, `suggest-${i}`)).filter(Boolean).map((n) => texts(n).at(-1));
@@ -361,7 +379,10 @@ test("a listed repository can be renamed in place and removed", async () => {
   assert.deepEqual(h.store["github-prs.repos.prs"], ["o/renamed"]);
   find(h.view.render(), "remove-repo-0").props.on_click(null, h.cx);
   assert.deepEqual(h.store["github-prs.repos.prs"], []);
-  assert.ok(texts(h.view.render()).includes("Choose repositories"), "back to the first-time panel");
+  assert.equal(h.store["github-prs.mode.prs"], "repos", "removing the last one doesn't switch to yours");
+  root = h.view.render();
+  assert.equal(find(root, "mode-repos").props.aria_selected, true, "back to picking repositories");
+  assert.equal(find(root, "setup-done"), null);
 });
 
 test("several repositories list together, with tabs, and one failing doesn't hide the rest", async () => {
@@ -384,4 +405,142 @@ test("several repositories list together, with tabs, and one failing doesn't hid
   assert.equal(h.storage.data.scope, JSON.stringify("acme/web"));
   find(root, "scope-1").props.on_click(null, h.cx);
   assert.equal(h.view.scope, "all", "clicking the chosen tab again shows them all");
+});
+
+const searches = (h) => h.execs.filter((e) => e[0] === "gh" && e[2] === "graphql");
+const asked = (call) => call.find((a) => a.startsWith("asked="));
+
+test("a new sidebar lists yours from every repository at once, and says so the first time", async () => {
+  const h = setup({ given: {} });
+  await h.settle();
+  assert.equal(searches(h).length, 1, "one search covers every repository");
+  assert.ok(searches(h)[0].includes("mine=is:pr is:open archived:false author:@me"));
+  assert.equal(asked(searches(h)[0]), "asked=is:pr is:open archived:false user-review-requested:@me", "reviews asked of you by name");
+  assert.equal(h.execs.filter((e) => e[1] === "pr" || e[2] === "user").length, 0, "no repository list, and the search says who you are");
+  let root = h.view.render();
+  assert.equal(find(root, "setup"), null, "nothing to set up");
+  assert.ok(texts(root).includes("Your pull requests"));
+  assert.ok(find(root, "pr-o/r#7") && find(root, "pr-acme/web#3"));
+  assert.ok(texts(root).includes("r#7") && texts(root).includes("web#3"), "rows name their repository");
+  assert.ok(texts(find(root, "pr-acme/web#3")).includes("Your review"));
+  assert.deepEqual([texts(find(root, "scope-0"))[0], texts(find(root, "scope-1"))[0]], ["r", "web"], "tabs for the repositories they're in");
+  find(root, "repo").props.on_click(null, h.cx);
+  await h.settle();
+  assert.deepEqual(h.execs.at(-1), ["open", "https://github.com/pulls"], "the title opens GitHub's own list");
+  // The first-run note, until it's dismissed.
+  assert.ok(find(root, "intro"));
+  find(root, "intro-close").props.on_click(null, h.cx);
+  assert.equal(h.store["github-prs.intro"], true);
+  root = h.view.render();
+  assert.equal(find(root, "intro"), null);
+  assert.equal(find(root, "repos").props.tooltip, "Choose what to list");
+  // The note's link makes the other choice, and opens the panel on it.
+  const other = setup({ given: {} });
+  await other.settle();
+  find(other.view.render(), "intro-repos").props.on_click(null, other.cx);
+  assert.equal(other.store["github-prs.mode.prs"], "repos");
+  assert.equal(other.store["github-prs.intro"], true);
+  root = other.view.render();
+  assert.equal(find(root, "mode-repos").props.aria_selected, true);
+  assert.ok(find(root, "add-repo"));
+});
+
+test("a sidebar that already lists repositories keeps listing them", async () => {
+  const h = setup({ given: {}, store: { "github-prs.repos.prs": ["o/r"] } });
+  await h.settle();
+  assert.equal(searches(h).length, 0);
+  assert.deepEqual(h.execs.filter((e) => e[1] === "pr").map((e) => e[4]), ["o/r"]);
+  const root = h.view.render();
+  assert.equal(find(root, "intro"), null, "no note about the other way");
+  h.view.openSetup(true, h.cx);
+  assert.equal(find(h.view.render(), "mode-repos").props.aria_selected, true);
+  // A layout can say which, whatever it seeds.
+  const told = setup({ given: { mode: "me", repos: ["o/r"] } });
+  await told.settle();
+  assert.equal(searches(told).length, 1);
+  assert.equal(told.execs.filter((e) => e[1] === "pr").length, 0);
+});
+
+test("the panel switches between yours and repositories, and keeps the repositories for later", async () => {
+  const h = setup({ given: {}, folders: [{ folder: "/code/shop", repo: "acme/shop" }] });
+  await h.settle();
+  find(h.view.render(), "repos").props.on_click(null, h.cx);
+  assert.equal(h.store["github-prs.intro"], true, "the panel is open: the note has done its job");
+  let root = h.view.render();
+  assert.ok(find(root, "setup"));
+  assert.equal(find(root, "mode-me").props.aria_selected, true);
+  assert.ok(find(root, "teams") && !find(root, "add-repo"), "yours: the teams option, no repository box");
+  find(root, "mode-repos").props.on_click(null, h.cx);
+  assert.equal(h.store["github-prs.mode.prs"], "repos");
+  await h.settle();
+  root = h.view.render();
+  assert.equal(find(root, "mode-repos").props.aria_selected, true);
+  assert.ok(find(root, "add-repo") && !find(root, "teams"));
+  assert.equal(find(root, "setup-done"), null, "nothing picked yet: no list to go back to");
+  assert.equal(find(root, "repos"), null);
+  assert.equal(texts(find(root, "suggest-0")).at(-1), "acme/shop");
+  find(root, "suggest-0").props.on_click(null, h.cx);
+  await h.settle();
+  assert.deepEqual(h.execs.filter((e) => e[1] === "pr").map((e) => e[4]), ["acme/shop"]);
+  find(h.view.render(), "setup-done").props.on_click(null, h.cx);
+  root = h.view.render();
+  assert.ok(find(root, "pr-list"));
+  assert.ok(texts(root).includes("shop"), "one repository: its name is the title");
+  // And back: the search runs again, and the repositories wait for the next switch.
+  h.view.openSetup(true, h.cx);
+  find(h.view.render(), "mode-me").props.on_click(null, h.cx);
+  await h.settle();
+  assert.equal(h.store["github-prs.mode.prs"], "me");
+  assert.deepEqual(h.store["github-prs.repos.prs"], ["acme/shop"]);
+  assert.equal(searches(h).length, 2);
+  find(h.view.render(), "setup-done").props.on_click(null, h.cx);
+  assert.ok(find(h.view.render(), "pr-o/r#7"));
+});
+
+test("the teams option asks for every review request and tags the ones a team got", async () => {
+  const team = { ...ASKED, number: 5, url: "https://github.com/acme/web/pull/5", reviewDecision: null,
+    reviewRequests: [{ __typename: "Team", name: "Frontend" }] };
+  const h = setup({ given: {}, search: (args) => (asked(args).includes(" review-requested:")
+    ? { code: 0, stdout: answer([node("o/r", LIST[0])], [node("acme/web", ASKED), node("acme/web", team)]), stderr: "" } : SEARCH) });
+  await h.settle();
+  h.view.openSetup(true, h.cx);
+  const option = find(h.view.render(), "teams");
+  assert.equal(option.props.aria_selected, false, "off by default");
+  option.props.on_click(null, h.cx);
+  assert.equal(h.store["github-prs.teams.prs"], true);
+  await h.settle();
+  assert.equal(asked(searches(h).at(-1)), "asked=is:pr is:open archived:false review-requested:@me");
+  h.view.openSetup(false, h.cx);
+  const root = h.view.render();
+  const row = find(root, "pr-acme/web#5");
+  assert.ok(texts(row).includes("Team review"));
+  assert.match(row.props.tooltip, /Team review/);
+  assert.ok(texts(find(root, "pr-acme/web#3")).includes("Your review"), "a request to you by name stays yours");
+  assert.equal(find(root, "filter-review").props.accessibility_label, "Review: 2 pull requests");
+});
+
+test("an answer with holes lists what came back and says what's missing; a failed one says what to do", async () => {
+  const saml = "Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.";
+  const h = setup({ given: {}, search: () => ({ code: 1, stdout: answer([node("o/r", LIST[0]), null], [], [{ message: saml }]), stderr: `gh: ${saml}` }) });
+  await h.settle();
+  let root = h.view.render();
+  assert.ok(find(root, "pr-o/r#7"));
+  const banner = texts(find(root, "error")).join(" ");
+  assert.match(banner, /Some pull requests couldn't be read\. .*single sign-on/);
+  assert.doesNotMatch(banner, /Showing the list from/, "the list is today's");
+  assert.equal(h.timers.at(-1).ms, model.DELAY.settled);
+  const signedOut = setup({ given: {}, search: () => ({ code: 1, stdout: "", stderr: "To get started with GitHub CLI, please run:  gh auth login" }) });
+  await signedOut.settle();
+  root = signedOut.view.render();
+  assert.ok(texts(find(root, "error")).some((s) => s.includes("gh auth login")));
+  assert.equal(signedOut.timers.at(-1).ms, model.DELAY.error);
+});
+
+test("with nothing of yours open, the list says so, whichever chip is on", async () => {
+  const h = setup({ given: {}, stored: {}, search: () => ({ code: 0, stdout: answer([], []), stderr: "" }) });
+  await h.settle();
+  const words = texts(h.view.render());
+  assert.ok(words.includes("Nothing of yours is open, and no review is waiting on you"));
+  assert.ok(words.some((w) => /Reviews asked of your teams aren't included/.test(w)));
+  assert.equal(find(h.view.render(), "repo-tabs"), null);
 });

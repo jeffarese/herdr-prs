@@ -3,9 +3,10 @@
 #
 #   sh docs/demo/shots.sh <stage folder>
 #
-# preview.png: three repositories listed. docs/media/first-run.png: a sidebar with none yet,
-# asking which to list, with suggestions from the stage's spaces. The app draws both itself
-# (`herdr-app shot`), so no screen recording is involved.
+# preview.png: yours, the sidebar's default, from every repository. docs/media/what-to-list.png:
+# the panel where that's chosen, set to repositories with none picked yet, and suggestions from
+# the stage's spaces. The app draws both itself (`herdr-app shot`), so no screen recording is
+# involved.
 set -eu
 kit=$(cd "$(dirname "$0")" && pwd)
 repo_root=$(cd "$kit/../.." && pwd)
@@ -33,7 +34,7 @@ sleep 1
 python3 "$repo_root/scripts/install.py"
 sleep 1
 
-# Seed the block's list the way a layout can: props, until someone edits it in the sidebar.
+# Set the block's props, as a layout can, and widen it.
 set_props() { # set_props <layout> <props json>
   python3 - "$HERDR_APP_HOME/layouts/$1.json" "$2" <<'PY'
 import json, sys
@@ -49,14 +50,15 @@ block["size"] = {"px": 380}
 json.dump(layout, open(path, "w"), indent=2)
 PY
 }
-set_props main-prs '{"block": "prs", "repos": ["acme/web", "acme/api", "acme/docs"]}'
+# Yours: what a new sidebar lists, with nothing to set up.
+set_props main-prs '{"block": "prs"}'
 sleep 4
 shoot "$repo_root/preview.png"
 
-# The first run: a block with nothing listed opens on the panel.
-herdr-app do layout.clone --name main-prs --as first-run >/dev/null
+# The panel: a block told to list repositories, with none picked, opens on it.
+herdr-app do layout.clone --name main-prs --as choose >/dev/null
 sleep 1
-set_props first-run '{"block": "first-run"}'
+set_props choose '{"block": "choose", "mode": "repos"}'
 sleep 4
-shoot "$repo_root/docs/media/first-run.png"
+shoot "$repo_root/docs/media/what-to-list.png"
 herdr-app do layout.switch --name main-prs >/dev/null

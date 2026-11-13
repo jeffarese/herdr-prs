@@ -1,6 +1,6 @@
 # The README's pictures
 
-[preview.png](../../preview.png) and [first-run.png](../media/first-run.png) show the real
+[preview.png](../../preview.png) and [what-to-list.png](../media/what-to-list.png) show the real
 sidebar in the real Herdr app, on a stage that is synthetic from end to end. Nothing in them
 comes from a real repository, project or person.
 
@@ -9,9 +9,9 @@ comes from a real repository, project or person.
 **Synthetic:**
 
 - **GitHub.** [bin/gh](bin/gh) stands in for the GitHub CLI. It answers the calls the sidebar
-  makes with made-up repositories (`acme/web`, `acme/api`, `acme/docs`), people and pull
-  requests, timed relative to now. It never contacts GitHub, and logs each call to `gh.log`
-  in the stage.
+  makes, a repository's list and the search for yours, with made-up repositories (`acme/web`,
+  `acme/api`, `acme/docs`), people and pull requests, timed relative to now. It never contacts
+  GitHub, and logs each call to `gh.log` in the stage.
 - **The avatars.** [bin/curl](bin/curl) draws a pattern for each author instead of
   downloading a picture.
 - **The projects.** `~/code/shop` and `~/code/api` are empty folders that the stand-in `gh`
@@ -32,8 +32,8 @@ It needs the Herdr app, herdr-core and python3. The app draws the pictures itsel
 
 - **[stage.sh](stage.sh)** starts the core and the second app, and prints the stage's folder.
   `stage.sh --down <folder>` stops everything and deletes it.
-- **[shots.sh](shots.sh)** opens two spaces, runs the installer, lists three repositories and
-  takes the pictures.
+- **[shots.sh](shots.sh)** opens two spaces, runs the installer and takes the pictures: the
+  sidebar listing yours, then its panel set to pick repositories.
 - **[record.sh](record.sh)** runs both and takes the stage down.
 
 Two things to know before you run it:
