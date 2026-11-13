@@ -1,0 +1,10 @@
+{
+  "name": "herdr-prs",
+  "private": true,
+  "type": "module",
+  "description": "A Herdr mod: your repositories' open pull requests and their checks, in a sidebar",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}

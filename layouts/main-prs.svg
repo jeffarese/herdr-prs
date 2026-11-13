@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200">
+  <rect width="320" height="200" fill="#16181b"/>
+  <!-- the shipped left sidebar: traffic lights, spaces, agents -->
+  <rect width="68" height="200" fill="#1d2024"/>
+  <circle cx="10" cy="10" r="2.6" fill="#ff6058"/><circle cx="18" cy="10" r="2.6" fill="#ffbd2e"/><circle cx="26" cy="10" r="2.6" fill="#28c840"/>
+  <g fill="#3a3f46"><rect x="8" y="26" width="44" height="5" rx="2"/><rect x="8" y="37" width="36" height="5" rx="2"/><rect x="8" y="48" width="40" height="5" rx="2"/>
+  <rect x="8" y="104" width="46" height="5" rx="2"/><rect x="8" y="115" width="38" height="5" rx="2"/><rect x="8" y="126" width="42" height="5" rx="2"/></g>
+  <!-- tabs, terminal, status bar -->
+  <g fill="#2a2e34"><rect x="76" y="6" width="34" height="9" rx="4.5"/><rect x="114" y="6" width="34" height="9" rx="4.5"/></g>
+  <rect x="74" y="22" width="152" height="164" rx="6" fill="#101214" stroke="#2d3238"/>
+  <g fill="#3a3f46"><rect x="82" y="32" width="70" height="4" rx="2"/><rect x="82" y="42" width="104" height="4" rx="2"/><rect x="82" y="52" width="56" height="4" rx="2"/></g>
+  <rect x="68" y="191" width="164" height="9" fill="#1d2024"/>
+  <!-- the pull request sidebar on the right -->
+  <rect x="232" width="88" height="200" fill="#1d2024"/>
+  <rect x="232" width="1" height="200" fill="#2d3238"/>
+  <rect x="240" y="8" width="44" height="6" rx="3" fill="#e9ecef"/>
+  <rect x="240" y="21" width="72" height="9" rx="4" fill="#101214" stroke="#2d3238"/>
+  <rect x="240" y="38" width="22" height="4" rx="2" fill="#e5534b"/>
+  <g><circle cx="244" cy="51" r="3.5" fill="none" stroke="#e5534b" stroke-width="1.4"/><rect x="251" y="49" width="56" height="4" rx="2" fill="#c9ced4"/><rect x="251" y="56" width="30" height="3" rx="1.5" fill="#4b525a"/></g>
+  <g><circle cx="244" cy="68" r="3.5" fill="none" stroke="#e5534b" stroke-width="1.4"/><rect x="251" y="66" width="48" height="4" rx="2" fill="#c9ced4"/><rect x="251" y="73" width="34" height="3" rx="1.5" fill="#4b525a"/></g>
+  <rect x="240" y="86" width="22" height="4" rx="2" fill="#d4a72c"/>
+  <g><circle cx="244" cy="99" r="3.5" fill="none" stroke="#d4a72c" stroke-width="1.4" stroke-dasharray="15 7"/><rect x="251" y="97" width="52" height="4" rx="2" fill="#c9ced4"/><rect x="251" y="104" width="28" height="3" rx="1.5" fill="#4b525a"/></g>
+  <rect x="240" y="117" width="22" height="4" rx="2" fill="#3fb950"/>
+  <g fill="none" stroke="#3fb950" stroke-width="1.4"><circle cx="244" cy="130" r="3.5"/><circle cx="244" cy="147" r="3.5"/><circle cx="244" cy="164" r="3.5"/><circle cx="244" cy="181" r="3.5"/></g>
+  <g fill="#c9ced4"><rect x="251" y="128" width="58" height="4" rx="2"/><rect x="251" y="145" width="44" height="4" rx="2"/><rect x="251" y="162" width="54" height="4" rx="2"/><rect x="251" y="179" width="40" height="4" rx="2"/></g>
+  <g fill="#4b525a"><rect x="251" y="135" width="32" height="3" rx="1.5"/><rect x="251" y="152" width="26" height="3" rx="1.5"/><rect x="251" y="169" width="36" height="3" rx="1.5"/><rect x="251" y="186" width="24" height="3" rx="1.5"/></g>
+</svg>

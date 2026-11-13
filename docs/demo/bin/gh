@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""A stand-in for the GitHub CLI, for the README's pictures.
+
+It answers the few `gh` calls the sidebar makes with made-up repositories, people and pull
+requests, timed relative to now, and writes each call to $DEMO_WORK/gh.log. Nothing here
+talks to GitHub.
+"""
+import json
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+
+NOW = datetime.now(timezone.utc)
+VIEWER = "sam"
+KNOWN = ["acme/web", "acme/api", "acme/docs", "acme/shop", "acme/design-system", "sam/dotfiles"]
+# The folders the stage's spaces open, and the repository each is a clone of.
+FOLDERS = {"shop": "acme/shop", "api": "acme/api"}
+
+
+def ago(minutes):
+    return (NOW - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def check(repo, name, state, started, took=4, workflow="CI"):
+    run = {"__typename": "CheckRun", "name": name, "workflowName": workflow, "startedAt": ago(started),
+           "detailsUrl": f"https://github.com/{repo}/actions/runs/{abs(hash(name)) % 10_000}"}
+    if state == "running":
+        return {**run, "status": "IN_PROGRESS", "conclusion": None, "completedAt": "0001-01-01T00:00:00Z"}
+    return {**run, "status": "COMPLETED", "conclusion": state, "completedAt": ago(started - took)}
+
+
+def suite(repo, started, overrides=None, names=("lint", "typecheck", "unit (1/3)", "unit (2/3)", "unit (3/3)", "e2e", "build", "preview")):
+    overrides = overrides or {}
+    return [check(repo, n, overrides.get(n, "SUCCESS"), started) for n in names]
+
+
+def pr(repo, number, title, author, branch, updated, created, *, checks=(), draft=False, review="REVIEW_REQUIRED",
+       mergeable="MERGEABLE", merge="BLOCKED", auto=False, add=40, remove=12, files=3, asked=False, bot=False):
+    return {
+        "number": number, "title": title, "url": f"https://github.com/{repo}/pull/{number}", "isDraft": draft,
+        "author": {"login": f"app/{author}" if bot else author, "is_bot": bot},
+        "headRefName": branch, "baseRefName": "main", "createdAt": ago(created), "updatedAt": ago(updated),
+        "reviewDecision": review, "mergeable": mergeable, "mergeStateStatus": merge,
+        "statusCheckRollup": list(checks), "reviewRequests": [{"__typename": "User", "login": VIEWER}] if asked else [],
+        "autoMergeRequest": {} if auto else None, "additions": add, "deletions": remove, "changedFiles": files,
+    }
+
+
+def pulls(repo):
+    if repo == "acme/web":
+        return [
+            pr(repo, 482, "Fix the checkout total when a coupon expires", "mara-lind", "fix/coupon-total", 6, 300,
+               checks=suite(repo, 20, {"e2e": "FAILURE"}), add=86, remove=31, files=5),
+            pr(repo, 479, "Lazy-load the product gallery", "devon", "perf/gallery", 3, 1900,
+               checks=suite(repo, 8, {"e2e": "running", "build": "running", "preview": "running"}), add=212, remove=95, files=9, asked=True),
+            pr(repo, 485, "Add dark mode to the account pages", VIEWER, "feat/account-dark", 2, 90,
+               checks=suite(repo, 5, {"unit (2/3)": "running", "unit (3/3)": "running", "e2e": "running"}), add=640, remove=120, files=22),
+            pr(repo, 476, "Show delivery estimates on the cart", "kit-o", "feat/delivery-eta", 45, 4000,
+               checks=suite(repo, 60), review="APPROVED", merge="CLEAN", add=150, remove=40, files=6),
+            pr(repo, 471, "Upgrade the router to v7", "app/deps-bot", "deps/router-7", 120, 3000,
+               checks=suite(repo, 130), review="REVIEW_REQUIRED", merge="BEHIND", add=8, remove=8, files=2, bot=True, auto=True),
+            pr(repo, 468, "Rework search filters", "ruiz", "feat/search-filters", 80, 9000,
+               checks=suite(repo, 90), review="CHANGES_REQUESTED", mergeable="CONFLICTING", merge="DIRTY", add=1240, remove=310, files=31),
+            pr(repo, 460, "Spike: server components for the PDP", VIEWER, "spike/rsc-pdp", 60 * 24 * 9, 60 * 24 * 12,
+               draft=True, merge="DRAFT", add=380, remove=60, files=14),
+        ]
+    if repo == "acme/api":
+        return [
+            pr(repo, 1203, "Retry webhook deliveries with backoff", VIEWER, "feat/webhook-retries", 12, 600,
+               checks=suite(repo, 25, {"integration": "FAILURE"}, names=("lint", "unit", "integration", "migrations", "build")), add=320, remove=44, files=8),
+            pr(repo, 1199, "Paginate the orders endpoint", "devon", "feat/orders-pages", 30, 2000,
+               checks=suite(repo, 40, names=("lint", "unit", "integration", "migrations", "build")), review="APPROVED", merge="CLEAN", auto=True, add=96, remove=20, files=4),
+            pr(repo, 1201, "Rate-limit the public API per key", "mara-lind", "feat/rate-limits", 4, 200,
+               checks=suite(repo, 6, {"integration": "running", "build": "running"}, names=("lint", "unit", "integration", "migrations", "build")), add=410, remove=12, files=11, asked=True),
+        ]
+    if repo == "acme/docs":
+        return [
+            pr(repo, 88, "Document the webhook retry policy", "kit-o", "docs/webhook-retries", 20, 500, review="REVIEW_REQUIRED", add=64, remove=3, files=1),
+        ]
+    return None
+
+
+def out(text):
+    sys.stdout.write(text + "\n")
+    sys.exit(0)
+
+
+def fail(text):
+    sys.stderr.write(text + "\n")
+    sys.exit(1)
+
+
+args = sys.argv[1:]
+with open(os.path.join(os.environ.get("DEMO_WORK", "/tmp"), "gh.log"), "a") as log:
+    log.write(json.dumps({"cwd": os.getcwd(), "args": args}) + "\n")
+
+if args[:2] == ["api", "user"]:
+    out(VIEWER)
+if args[:1] == ["api"] and args[1].startswith("user/repos"):
+    out("\n".join(["acme/web", "acme/api", "acme/docs", "acme/design-system", "sam/dotfiles"]))
+if args[:1] == ["api"] and args[1].startswith("apps/"):
+    out("1001")
+if args[:2] == ["pr", "list"]:
+    repo = args[args.index("--repo") + 1]
+    found = pulls(repo.lower())
+    if found is None:
+        fail(f"GraphQL: Could not resolve to a Repository with the name '{repo}'. (repository)")
+    out(json.dumps(found))
+if args[:2] == ["repo", "view"]:
+    asked = args[2] if len(args) > 2 and not args[2].startswith("-") else FOLDERS.get(os.path.basename(os.getcwd()))
+    if not asked:
+        fail("no git remotes found")
+    for repo in KNOWN:
+        if repo.lower() == asked.lower():
+            out(repo)
+    fail(f"GraphQL: Could not resolve to a Repository with the name '{asked}'. (repository)")
+fail(f"gh (demo): not part of the stage: {' '.join(args)}")
