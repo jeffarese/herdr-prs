@@ -165,6 +165,8 @@ Everything goes through programs you already have; the mod makes no other networ
   its 10-second limit and it answers 502; ten at a time take it 2 to 7 seconds. A call it
   still gives up on is asked again in halves. A pull request whose details don't come back
   keeps the ones it had, and the banner says some couldn't be read.
+- Any call whose answer comes back cut off (gh says "unexpected end of JSON input") is asked
+  again once; a batch of details still cut off is asked again in halves.
 - For picked repositories, `gh pr list` for each one, `gh api user` once to learn your login,
   and `gh repo view` to check a repository you add.
 - For the suggestions, once per sidebar: `gh repo view` in each local space's folder, and

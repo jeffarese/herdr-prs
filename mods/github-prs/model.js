@@ -368,6 +368,10 @@ export async function pool(items, limit, work) {
 /** Whether GitHub gave up on a query: past its time limit, its gateway answers 502 or 504. */
 export const tooSlow = (text) => /HTTP 50[24]|Bad Gateway|Gateway Time-?out|timed? ?out/i.test(String(text ?? ""));
 
+/** Whether GitHub's answer stopped short: an empty or cut-off body, which gh (or JSON.parse)
+ *  reports as an unexpected end of JSON. Asking again usually gets all of it. */
+export const cutOff = (text) => /unexpected end of JSON|unexpected EOF/i.test(String(text ?? ""));
+
 // GitHub lets an account use about a minute of its servers' time a minute through GraphQL, and
 // counts the time its answers take. A refresh waits at least this many times as long as its
 // calls took, so a sidebar keeps to a quarter of that, however much it lists.
@@ -383,6 +387,7 @@ export function explain(text, repo = "") {
   if (repo && /could not resolve to a repository|HTTP 404|not found/i.test(message)) return `Can't see ${repo}. Check the name and your access.`;
   if (/ENOENT|no such file|not installed|cannot start|can't start|failed to start|command not found/i.test(message)) return "The GitHub CLI (gh) isn't installed, or isn't on Herdr's PATH.";
   if (tooSlow(message)) return "GitHub didn't answer in time.";
+  if (cutOff(message)) return "GitHub's answer was cut off. It'll be asked again shortly.";
   if (/could not resolve host|network|connection/i.test(message)) return "Can't reach GitHub. Check the connection.";
   return message.split("\n").find(Boolean)?.slice(0, 200) || "gh failed without saying why.";
 }

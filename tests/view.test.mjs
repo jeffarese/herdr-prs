@@ -582,6 +582,32 @@ test("a batch GitHub gives up on is asked again in halves; one that still fails 
   assert.doesNotMatch(banner, /Showing the list from/);
 });
 
+test("an answer GitHub cuts off is asked for again", async () => {
+  const cut = { code: 1, stdout: "", stderr: "unexpected end of JSON input" };
+  // The search comes back cut off once, then whole.
+  let searches = 0;
+  const yours = github(YOURS);
+  const h = setup({ given: {}, search: (args) => (!query(args).includes("nodes(ids:") && searches++ === 0 ? cut : yours(args)) });
+  await h.settle();
+  assert.equal(searches, 2);
+  assert.equal(h.view.prs.length, 2);
+  assert.equal(find(h.view.render(), "error"), null);
+  // A batch of details that's cut off every time it's asked whole comes back in halves.
+  const asks = many(12);
+  const halves = setup({ given: {}, search: github({ mine: [], asked: asks, details: (ids) => (ids.length > 5 ? cut : undefined) }) });
+  await halves.settle();
+  assert.deepEqual(lookups(halves).map((e) => idsIn(e).length), [10, 2, 10, 5, 5], "the 10 asked twice, then as 5 and 5");
+  assert.equal(halves.view.prs.length, 12);
+  assert.equal(find(halves.view.render(), "error"), null);
+  // A repository's list that's cut off twice says so in words, not in gh's.
+  const repo = setup({ code: 1, stderr: "unexpected end of JSON input" });
+  await repo.settle();
+  assert.equal(repo.execs.filter((e) => e[1] === "pr").length, 2);
+  const banner = texts(find(repo.view.render(), "error")).join(" ");
+  assert.match(banner, /GitHub's answer was cut off/);
+  assert.doesNotMatch(banner, /unexpected end of JSON/);
+});
+
 test("an answer with holes lists what came back and says what's missing; a failed one says what to do", async () => {
   const saml = "Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.";
   const h = setup({ given: {}, search: github({ mine: [node("o/r", LIST[0]), null], asked: [], errors: [{ message: saml }] }) });

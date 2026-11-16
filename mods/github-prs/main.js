@@ -7,7 +7,7 @@ import {
   duration, clock, took, opener, avatarFile, initials, strip, tags, size, isStale,
   parseRepo, uniqueRepos, sameRepo, repoKey, configured, shortName, inScope, repoCounts, problems,
   chosenMode, withTeams, modeKey, teamsKey, INTRO_KEY, reposOf,
-  BATCH, PARALLEL, findArgs, detailsArgs, parseFound, parseDetails, yours, chunks, pool, tooSlow, paced,
+  BATCH, PARALLEL, findArgs, detailsArgs, parseFound, parseDetails, yours, chunks, pool, tooSlow, cutOff, paced,
 } from "./model.js";
 
 const ART = "mods/github-prs/";
@@ -259,26 +259,31 @@ export default class PullRequests extends View {
 
   // Each answer is [source, pull requests or null, what went wrong, how long GitHub took in ms].
   async fetch(repo) {
-    const start = Date.now();
+    const timing = { ms: 0 };
     try {
-      const result = await exec("gh", listArgs(repo), { timeout: 60_000 });
+      const result = await this.gh(listArgs(repo), timing);
       if (result.code !== 0) throw new Error(result.stderr || result.stdout || `gh exited with ${result.code}`);
-      return [repo, parse(result.stdout, this.viewer, repo), null, Date.now() - start];
+      return [repo, parse(result.stdout, this.viewer, repo), null, timing.ms];
     } catch (error) {
-      return [repo, null, explain(error?.message ?? error, repo), Date.now() - start];
+      return [repo, null, explain(error?.message ?? error, repo), timing.ms];
     }
   }
 
   // One gh call, timed, that never throws: a program that can't start answers like a failed call.
+  // An answer that came back cut off is asked for once more.
   async gh(args, timing) {
-    const start = Date.now();
-    try {
-      return await exec("gh", args, { timeout: 60_000 });
-    } catch (error) {
-      return { code: 1, stdout: "", stderr: String(error?.message ?? error) };
-    } finally {
-      timing.ms += Date.now() - start;
-    }
+    const once = async () => {
+      const start = Date.now();
+      try {
+        return await exec("gh", args, { timeout: 60_000 });
+      } catch (error) {
+        return { code: 1, stdout: "", stderr: String(error?.message ?? error) };
+      } finally {
+        timing.ms += Date.now() - start;
+      }
+    };
+    const first = await once();
+    return first.code !== 0 && cutOff(first.stderr || first.stdout) ? once() : first;
   }
 
   // Yours, from every repository. A light search finds the pull requests you opened and those
@@ -299,7 +304,7 @@ export default class PullRequests extends View {
       const ask = async (ids, split) => {
         const answer = await this.gh(detailsArgs(ids), timing);
         const got = parseDetails(answer.stdout);
-        if (!got && split && ids.length > 1 && tooSlow(answer.stderr)) {
+        if (!got && split && ids.length > 1 && (tooSlow(answer.stderr) || cutOff(answer.stderr))) {
           const half = Math.ceil(ids.length / 2);
           await Promise.all([ask(ids.slice(0, half), false), ask(ids.slice(half), false)]);
           return;

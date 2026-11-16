@@ -348,6 +348,11 @@ test("answers with holes keep what they have and say what's missing", () => {
     assert.equal(m.explain(slow), "GitHub didn't answer in time.");
   }
   assert.equal(m.tooSlow("gh: HTTP 500"), false);
+  for (const cut of ["unexpected end of JSON input", "Unexpected end of JSON input", "JSON Parse error: Unexpected EOF", "unexpected EOF"]) {
+    assert.ok(m.cutOff(cut), cut);
+    assert.match(m.explain(cut), /GitHub's answer was cut off/);
+  }
+  assert.equal(m.cutOff("gh: HTTP 502"), false);
 });
 
 test("details come in batches, a few calls at a time", async () => {
