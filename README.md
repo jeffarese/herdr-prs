@@ -107,7 +107,8 @@ repositories.
   listing. If GitHub leaves part of an answer out (an organization that limits what `gh` can
   read), the banner says so, and the rest is listed.
 - **Rail:** › folds the sidebar to a 52 px rail with the failing, running and passing counts.
-  ‹ unfolds it to the width it had before.
+  ‹ unfolds it to the width it had before. It folds the whole sidebar the panel sits in, so
+  other panels there (the stats, a board) go to their rails with it.
 
 ### How it counts checks
 
@@ -119,19 +120,24 @@ out. A pull request whose checks were all skipped counts as passing, as it does 
 
 ## Where it goes
 
-The installer adds a `prs` block at the right edge of the layout Herdr shows, so it combines
-with other mods there. A personal layout is backed up once as `<name>.json.before-prs`.
+The installer adds a `prs` block at the top of the right sidebar of the layout Herdr shows. The
+sidebar belongs to the layout, not to this mod: it is a `sidebar-right` column (or whatever
+column is already at the right edge), and other mods stack in it as panels. If another panel is
+alone at the right edge, the two share a new `sidebar-right` column. Folding acts on that column,
+so the panels fold together, and you can add more without them fighting over it. The panel finds
+its sidebar from the layout, so you can also move its block into Herdr's left `sidebar` or any
+other column beside the tabs. A personal layout is backed up once as `<name>.json.before-prs`.
 Herdr's shipped layouts are read-only, so if one of those is showing, the installer asks Herdr
 to clone `main` as `main-prs` (keeping your sidebar widths) and switches to it. Running the
 installer again updates the mod and leaves the layout alone. A clone doesn't get Herdr's later
 changes to `main`. `--remove` leaves the layouts in place, because other mods may be in them.
 To go back to the shipped layout, run `herdr-app do layout.switch --name main`.
 
-To hide or show the sidebar, run `herdr-app do layout.toggle --id prs`, or bind the toggle in
-`~/.config/herdr-app/keys.json`:
+To hide or show the whole sidebar, run `herdr-app do layout.toggle --id sidebar-right` (or
+`--id prs` for this panel alone), or bind the toggle in `~/.config/herdr-app/keys.json`:
 
 ```json
-"cmd-shift-g": { "command": "layout.toggle", "args": { "id": "prs" } }
+"cmd-shift-g": { "command": "layout.toggle", "args": { "id": "sidebar-right" } }
 ```
 
 Editing `keys.json` makes the whole file yours: Herdr then stops adding new default shortcuts

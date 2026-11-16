@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, ScrollHandle } from "gpui-base";
-import { exec, props, theme, settings, run, notify, window, appHome, shared, setShared, spaces } from "herdr";
+import { exec, props, theme, settings, run, notify, window, appHome, shared, setShared, spaces, layout } from "herdr";
 import { exists, mkdir, unlink } from "fs/promises";
 import {
   DELAY, FILTERS, VIEWS, parse, listArgs, explain, nextDelay, sections, counts, stateCounts,
@@ -9,6 +9,7 @@ import {
   chosenMode, withTeams, modeKey, teamsKey, INTRO_KEY, reposOf,
   BATCH, PARALLEL, findArgs, detailsArgs, parseFound, parseDetails, yours, chunks, pool, tooSlow, cutOff, paced,
 } from "./model.js";
+import { sidebarOf, widthKey, railWidth, LEFT } from "./sidebar.js";
 
 const ART = "mods/github-prs/";
 const glyph = (name, size = 14) => svg(`${ART}${name}.svg`).size(size).flex_none();
@@ -504,13 +505,31 @@ export default class PullRequests extends View {
     cx.notify();
   }
 
+  // The sidebar this copy sits in: the column it shares with other panels (stats, a board), or
+  // its own block when it is alone at the edge. Folding acts on that, never on this block alone,
+  // so a panel stacked in a column doesn't fold its height instead of the column's width.
+  sidebar() {
+    const mine = (n) => n.id === this.block || (n.content?.mod === "github-prs" && (n.content.props?.block || "prs") === this.block);
+    const root = layout();
+    const found = sidebarOf(root, mine);
+    return { id: found?.id ?? this.block, left: Boolean(found) && root?.children?.[0] === found };
+  }
+
+  // The width to come back to is the sidebar's, shared by every mod in it.
   collapse() {
-    if (Number.isFinite(this.width) && this.width >= RAIL) store.set("width", Math.round(this.width));
-    run("layout.resize", { id: this.block, px: NARROW });
+    const { id } = this.sidebar();
+    if (Number.isFinite(this.width) && this.width >= RAIL) setShared(widthKey(id), Math.round(this.width));
+    // Mods made before Herdr's rail went by width still read this flag, as its own fold sets it.
+    if (id === LEFT) setShared("sidebar.collapsed", true);
+    run("layout.resize", { id, px: railWidth(id, window()?.platform, NARROW) });
   }
 
   expand() {
-    run("layout.resize", { id: this.block, px: Math.max(260, Number(store.get("width", WIDE)) || WIDE) });
+    const { id } = this.sidebar();
+    // Before the width was shared, each copy kept its own.
+    const kept = Number(shared(widthKey(id))) || Number(store.get("width", WIDE)) || WIDE;
+    if (id === LEFT) setShared("sidebar.collapsed", false);
+    run("layout.resize", { id, px: Math.max(260, kept) });
   }
 
   iconButton(t, id, icon, tip, action, spinning = false) {
@@ -754,7 +773,7 @@ export default class PullRequests extends View {
       .tooltip(`${n[state]} ${word}`).accessibility_label(`${n[state]} ${word}`)
       .child(this.stateMark(t, state, 15)).child(div().text_size(10.5).text_color(t.muted).child(String(n[state]))) : null;
     return [
-      this.iconButton(t, "expand", "chevron-left", `Show ${what}`, () => this.expand()).mt(8),
+      this.iconButton(t, "expand", this.sidebar().left ? "chevron-right" : "chevron-left", `Show ${what}`, () => this.expand()).mt(8),
       div().id("rail-repo").mt(4).flex_none().tooltip(`${title}: ${inScope(this.prs ?? [], this.currentScope()).length} open`).child(glyph("pr", 16).text_color(t.accent)),
       ...[item("failing", "failing"), item("running", "running"), item("passing", "passing")].filter(Boolean),
       this.error ? div().id("rail-error").flex_none().tooltip(this.error).child(glyph("fail", 13).text_color(t.blocked)) : null,
@@ -981,7 +1000,7 @@ export default class PullRequests extends View {
         .child(this.iconButton(t, "repos", "sliders", this.setup ? "Back to the list" : "Choose what to list", (cx) => this.openSetup(!this.setup, cx))
           .when(this.setup, (b) => b.bg(t.selected).text_color(t.foreground)))
         .child(this.iconButton(t, "refresh", "refresh", tip, (cx) => this.refresh(cx), this.loading)))
-      .child(this.iconButton(t, "collapse", "chevron-right", "Fold to a rail", () => this.collapse()));
+      .child(this.iconButton(t, "collapse", this.sidebar().left ? "chevron-left" : "chevron-right", "Fold to a rail", () => this.collapse()));
     if (setup) return root.child(header).child(this.setupPanel(t, picked));
     return root.child(header)
       .when(repos.length > 1, (el) => el.child(this.repoTabs(t, repos, all)))

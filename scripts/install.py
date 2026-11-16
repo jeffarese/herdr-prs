@@ -21,6 +21,9 @@ APP_HOME = Path(os.environ.get("HERDR_APP_HOME", Path.home() / ".config/herdr-ap
 MOD = "github-prs"
 LAYOUT = "main-prs"
 BLOCK = "prs"
+# The right sidebar belongs to the layout, not to this mod: other panels (the stats, a board) stack
+# in the same column, and folding narrows the column.
+SIDEBAR = "sidebar-right"
 TITLE = "Pull requests"
 IGNORE = shutil.ignore_patterns("*.d.ts", "jsconfig.json", "*.error")
 
@@ -58,6 +61,31 @@ def find(node, node_id):
         if match:
             return match
     return None
+
+
+def holds_tabs(node):
+    return bool(node.get("content", {}).get("tab")) or any(holds_tabs(c) for c in node.get("children", []))
+
+
+def add_panel(layout, panel):
+    """Put the panel at the top of the right sidebar, making the sidebar if there is none."""
+    children = layout["children"]
+    edge = children[-1] if len(children) > 1 else None
+    if edge and edge.get("type") == "column" and not holds_tabs(edge):
+        edge["children"].insert(0, panel)
+        return
+    column = {"id": SIDEBAR, "type": "column", "size": {"px": 340}, "min": 44, "max": 560, "background": "chrome",
+              "divider": {"width": 1, "color": "border"}, "children": [panel]}
+    if edge and edge.get("type") == "block" and not holds_tabs(edge):
+        # Another panel alone at the right edge: they share the sidebar, at its width.
+        other = {k: v for k, v in edge.items() if k not in ("size", "min", "max")}
+        for key in ("size", "min", "max"):
+            if key in edge:
+                column[key] = edge[key]
+        column["children"].append({**other, "size": {"weight": 1}})
+        children[-1] = column
+        return
+    children.append(column)
 
 
 def write_json(path, value):
@@ -100,10 +128,9 @@ def make_layout(app):
     if cloned:
         shutil.copyfile(SOURCE / "layouts" / f"{LAYOUT}.svg", APP_HOME / "layouts" / f"{LAYOUT}.svg")
         layout["preview"] = f"layouts/{LAYOUT}.svg"
-    block = find(layout, BLOCK)
-    if block is None:
-        layout["children"].append({
-            "id": BLOCK, "type": "block", "size": {"px": 340}, "min": 44, "max": 560, "background": "chrome",
+    if find(layout, BLOCK) is None:
+        add_panel(layout, {
+            "id": BLOCK, "type": "block", "size": {"weight": 1}, "background": "chrome",
             "content": {"mod": MOD, "props": {"block": BLOCK}},
         })
     if layout != json.loads(before):
@@ -127,6 +154,10 @@ def remove(app):
         found = [(n, p) for n, p in walk(layout) if p and n.get("content", {}).get("mod") == MOD]
         for node, parent in found:
             parent["children"].remove(node)
+        # A right sidebar left with nothing in it goes too; one with other panels stays.
+        for node, parent in list(walk(layout)):
+            if parent and node.get("id") == SIDEBAR and not node.get("children"):
+                parent["children"].remove(node)
         if found:
             write_json(path, layout)
             print(f"Took the pull request sidebar out of {path.stem}.")

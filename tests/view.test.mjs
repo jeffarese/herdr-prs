@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as model from "../mods/github-prs/model.js";
+import * as sidebar from "../mods/github-prs/sidebar.js";
 
 const LIST = [
   {
@@ -54,7 +55,7 @@ function github({ mine = [], asked = [], team = [], errors, details } = {}) {
 }
 const YOURS = { mine: [node("o/r", LIST[0])], asked: [node("acme/web", ASKED)] };
 
-function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, width = 340, store = {}, folders = [], repos = {}, lists = {}, failing = [], cached = [], curl = 0, stored = { filter: JSON.stringify("all") }, search = github(YOURS) } = {}) {
+function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, width = 340, store = {}, folders = [], repos = {}, lists = {}, failing = [], cached = [], curl = 0, stored = { filter: JSON.stringify("all") }, search = github(YOURS), tree = null } = {}) {
   const execs = [];
   const commands = [];
   const notes = [];
@@ -118,7 +119,8 @@ function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, wi
     run: (name, args) => commands.push({ name, args }), notify: (n) => notes.push(n), window: () => ({ platform: "macos" }),
     localStorage: storage,
     appHome: () => "/app", exists: async (path) => cached.includes(path), mkdir: async () => {}, unlink: async (path) => removed.push(path),
-    ...model,
+    layout: () => tree,
+    ...model, ...sidebar,
   };
   const source = readFileSync(new URL("../mods/github-prs/main.js", import.meta.url), "utf8")
     .replace(/^import [\s\S]*?;$/gm, "").replace("export default class", "return class");
@@ -241,6 +243,48 @@ test("a narrow column is a rail that expands back to its remembered width", asyn
   assert.equal(find(rail, "pr-list"), null);
   find(rail, "expand").props.on_click(null, h.cx);
   assert.deepEqual(h.commands.at(-1), { name: "layout.resize", args: { id: "prs", px: 340 } });
+});
+
+// The window from the screenshot: the pull requests and the stats share the right sidebar.
+const shared = (right) => ({
+  id: "root", type: "row", children: [
+    { id: "sidebar", type: "column", children: [{ id: "spaces", type: "block", content: { mod: "agent-sidebar" } }] },
+    { id: "work", type: "column", children: [{ id: "main", type: "block", content: { tab: "active" } }] },
+    right,
+  ],
+});
+const COLUMN = { id: "sidebar-right", type: "column", children: [
+  { id: "prs", type: "block", size: { weight: 1 }, content: { mod: "github-prs", props: { block: "prs" } } },
+  { id: "stats-right", type: "block", size: { px: 300 }, content: { mod: "herdr-stats", props: { spot: "right" } } },
+] };
+
+test("in a sidebar shared with other panels, folding narrows the sidebar, not this panel's height", async () => {
+  const h = setup({ tree: shared(COLUMN), width: 320 });
+  await h.settle();
+  find(h.view.render(), "collapse").props.on_click(null, h.cx);
+  assert.deepEqual(h.commands.at(-1), { name: "layout.resize", args: { id: "sidebar-right", px: 52 } });
+  assert.equal(h.store["sidebar.width.sidebar-right"], 320, "the width to come back to belongs to the sidebar");
+  h.view.width = 52;
+  find(h.view.render(), "expand").props.on_click(null, h.cx);
+  assert.deepEqual(h.commands.at(-1), { name: "layout.resize", args: { id: "sidebar-right", px: 320 } });
+});
+
+test("the sidebar is found by the block's mod and props when its id differs, and folds toward its edge", async () => {
+  const mine = { id: "my-prs", type: "block", content: { mod: "github-prs", props: { block: "work-prs" } } };
+  const tree = shared({ id: "board", type: "block", content: { mod: "board" } });
+  tree.children[0].children.push(mine);
+  const h = setup({ tree, given: { block: "work-prs" } });
+  await h.settle();
+  find(h.view.render(), "collapse").props.on_click(null, h.cx);
+  assert.deepEqual(h.commands.at(-1), { name: "layout.resize", args: { id: "sidebar", px: 76 } }, "Herdr's sidebar folds as its own button does");
+  assert.equal(h.store["sidebar.collapsed"], true, "and says so, for mods that read the flag");
+});
+
+test("a panel alone at the edge folds itself, as before", async () => {
+  const h = setup({ tree: shared(COLUMN.children[0]) });
+  await h.settle();
+  find(h.view.render(), "collapse").props.on_click(null, h.cx);
+  assert.deepEqual(h.commands.at(-1), { name: "layout.resize", args: { id: "prs", px: 52 } });
 });
 
 test("authors show as round avatars, downloaded once; initials until then or if there is none", async () => {
