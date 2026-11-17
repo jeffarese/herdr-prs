@@ -109,6 +109,11 @@ repositories.
 - **Rail:** › folds the sidebar to a 52 px rail with the failing, running and passing counts.
   ‹ unfolds it to the width it had before. It folds the whole sidebar the panel sits in, so
   other panels there (the stats, a board) go to their rails with it.
+- **Hide & reshow:** × in the header hides the panel (and `sidebar-right` if it was the last
+  visible panel in it) and pauses `gh` polling until reshown. Bring it back from **Bar** (`Cmd+K`,
+  "Show: Pull requests"), **Mods** (`Cmd+Shift+M`), `mod.open:github-prs`, or `layout.toggle`.
+  `mod.open:github-prs` toggles a docked panel; with none in the layout it opens the list as a
+  dialog. A copy opened in a pane (Mods' **Open beside**) has no × or fold: close its pane.
 
 ### How it counts checks
 

@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, ScrollHandle } from "gpui-base";
-import { exec, props, theme, settings, run, notify, window, appHome, shared, setShared, spaces, layout } from "herdr";
+import { exec, props, theme, settings, run, notify, window, appHome, shared, setShared, spaces, layout, panes, closeOverlay } from "herdr";
 import { exists, mkdir, unlink } from "fs/promises";
 import {
   DELAY, FILTERS, VIEWS, parse, listArgs, explain, nextDelay, sections, counts, stateCounts,
@@ -9,9 +9,10 @@ import {
   chosenMode, withTeams, modeKey, teamsKey, INTRO_KEY, reposOf,
   BATCH, PARALLEL, findArgs, detailsArgs, parseFound, parseDetails, yours, chunks, pool, tooSlow, cutOff, paced,
 } from "./model.js";
-import { sidebarOf, widthKey, railWidth, LEFT } from "./sidebar.js";
+import { sidebarOf, widthKey, railWidth, LEFT, hasBlock, isHidden, hideTargets, showTargets } from "./sidebar.js";
 
-const ART = "mods/github-prs/";
+const MOD = "github-prs";
+const ART = `mods/${MOD}/`;
 const glyph = (name, size = 14) => svg(`${ART}${name}.svg`).size(size).flex_none();
 // Downloaded avatars. A hidden folder: Herdr reloads a mod when a file in it changes, but not a
 // hidden one, and an image is only drawn once its download has finished.
@@ -51,6 +52,24 @@ export default class PullRequests extends View {
     // Herdr's per-copy parameters come from props(), not GPUI's init argument.
     this.given = props() ?? {};
     this.block = this.given.block || "prs";
+    this.handover = false;
+    this.paused = false;
+    if (this.given.overlay) {
+      const root = layout();
+      const match = this.mine(!this.given.block);
+      if (hasBlock(root, match)) {
+        this.handover = true;
+        if (isHidden(root, match)) {
+          const { show, select } = showTargets(root, match, this.block);
+          for (const id of show) run("layout.show", { id });
+          for (const args of select) run("layout.select", args);
+        } else {
+          for (const id of hideTargets(root, match, this.block)) run("layout.hide", { id });
+        }
+        closeOverlay(this.given.overlay);
+        return;
+      }
+    }
     this.key = repoKey(this.block);
     // What was asked for (a repository, or ME) → its last good list, and → what went wrong the
     // last time it was asked for. A source in `partial` answered, but not all of it.
@@ -223,6 +242,13 @@ export default class PullRequests extends View {
   // All the sources are asked at once; one that fails keeps its last list and doesn't hold up
   // the others. A refresh asked for mid-fetch (a repository was just added) runs right after.
   refresh(cx) {
+    if (this.hidden()) {
+      this.paused = true;
+      this.pending?.cancel?.();
+      this.pending = null;
+      return;
+    }
+    this.paused = false;
     if (this.loading) { this.again = true; return; }
     this.pending?.cancel?.();
     this.pending = null;
@@ -252,7 +278,8 @@ export default class PullRequests extends View {
       let delay = paced(failed ? Math.min(DELAY.error, nextDelay(ok)) : nextDelay(ok), spent);
       if (this.again) { this.again = false; delay = 0; }
       this.loading = false;
-      this.pending = cx.timer.after(delay, (cx) => this.refresh(cx));
+      if (this.hidden()) this.paused = true;
+      else this.pending = cx.timer.after(delay, (cx) => this.refresh(cx));
       cx.notify();
       await this.loadAvatars(cx);
     });
@@ -505,13 +532,46 @@ export default class PullRequests extends View {
     cx.notify();
   }
 
+  // The layout node that is this copy's block: its id, or a github-prs block whose `block` prop
+  // names it. With `anyBlock`, any github-prs block (`mod.open` names none).
+  mine(anyBlock = false) {
+    return (n) => (anyBlock && n.content?.mod === MOD)
+      || n.id === this.block
+      || (n.content?.mod === MOD && (n.content.props?.block || "prs") === this.block);
+  }
+
+  // Whether this copy is the block docked in the layout, so × and pausing may act on it. A pane
+  // (Mods' "Open beside", `pane.split {mod}`) gets only the props it was given, so while a
+  // github-prs pane is open a copy without a `block` prop can't tell itself from it: it keeps
+  // polling and offers no × or fold rather than act on the docked block.
+  docked() {
+    if (this.given.overlay) return false;
+    return Boolean(this.given.block) || !panes().some((p) => p.mod === MOD);
+  }
+
+  // Hidden copies stay alive and their timers keep running, so polling stops while this one is.
+  hidden() {
+    return this.docked() && isHidden(layout(), this.mine());
+  }
+
+  hide() {
+    if (this.given.overlay) {
+      closeOverlay(this.given.overlay);
+      return;
+    }
+    if (!this.docked()) return;
+    this.paused = true;
+    this.pending?.cancel?.();
+    this.pending = null;
+    for (const id of hideTargets(layout(), this.mine(), this.block)) run("layout.hide", { id });
+  }
+
   // The sidebar this copy sits in: the column it shares with other panels (stats, a board), or
   // its own block when it is alone at the edge. Folding acts on that, never on this block alone,
   // so a panel stacked in a column doesn't fold its height instead of the column's width.
   sidebar() {
-    const mine = (n) => n.id === this.block || (n.content?.mod === "github-prs" && (n.content.props?.block || "prs") === this.block);
     const root = layout();
-    const found = sidebarOf(root, mine);
+    const found = sidebarOf(root, this.mine());
     return { id: found?.id ?? this.block, left: Boolean(found) && root?.children?.[0] === found };
   }
 
@@ -949,7 +1009,13 @@ export default class PullRequests extends View {
           .on_click((_e, cx) => this.openSetup(false, cx)).child("Done"))));
   }
 
-  render() {
+  render(cx) {
+    if (this.handover) return div();
+    // Shown again after a pause: fetch now. Only a render that can schedule ends the pause.
+    if (this.paused && cx && !this.hidden()) {
+      this.paused = false;
+      cx.timer.after(0, (cx) => this.refresh(cx));
+    }
     const t = /** @type {Record<string, import("gpui-kit").Color>} */ (theme());
     const compact = this.width < RAIL;
     const now = Date.now();
@@ -986,6 +1052,16 @@ export default class PullRequests extends View {
         cx.stop_propagation();
       });
     if (compact) return root.items_center().gap(6).children(this.rail(t));
+    const docked = this.docked();
+    const actions = h_flex().flex_none().gap(2).items_center()
+      .when(listing, (el) => el
+        .child(this.iconButton(t, "repos", "sliders", this.setup ? "Back to the list" : "Choose what to list", (cx) => this.openSetup(!this.setup, cx))
+          .when(this.setup, (b) => b.bg(t.selected).text_color(t.foreground)))
+        .child(this.iconButton(t, "refresh", "refresh", tip, (cx) => this.refresh(cx), this.loading)))
+      .when(docked, (el) => el
+        .child(this.iconButton(t, "collapse", this.sidebar().left ? "chevron-left" : "chevron-right", "Fold to a rail", () => this.collapse())))
+      .when(Boolean(this.given.overlay) || docked, (el) => el
+        .child(this.iconButton(t, "hide", "x", this.given.overlay ? "Close" : "Hide pull requests", () => this.hide())));
     const header = h_flex().h(40).flex_none().pl(14).pr(8).gap(8).items_center()
       .child(glyph("pr", 15).text_color(t.accent))
       .child(div().id("repo").min_w(0).truncate().font_semibold().text_size(14)
@@ -996,11 +1072,7 @@ export default class PullRequests extends View {
         .child(title))
       .child(div().flex_none().text_size(12).text_color(t.muted).child(this.prs && !setup ? String(scoped.length) : ""))
       .child(div().flex_1())
-      .when(listing, (el) => el
-        .child(this.iconButton(t, "repos", "sliders", this.setup ? "Back to the list" : "Choose what to list", (cx) => this.openSetup(!this.setup, cx))
-          .when(this.setup, (b) => b.bg(t.selected).text_color(t.foreground)))
-        .child(this.iconButton(t, "refresh", "refresh", tip, (cx) => this.refresh(cx), this.loading)))
-      .child(this.iconButton(t, "collapse", this.sidebar().left ? "chevron-left" : "chevron-right", "Fold to a rail", () => this.collapse()));
+      .child(actions);
     if (setup) return root.child(header).child(this.setupPanel(t, picked));
     return root.child(header)
       .when(repos.length > 1, (el) => el.child(this.repoTabs(t, repos, all)))

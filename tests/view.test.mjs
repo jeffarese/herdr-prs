@@ -55,13 +55,15 @@ function github({ mine = [], asked = [], team = [], errors, details } = {}) {
 }
 const YOURS = { mine: [node("o/r", LIST[0])], asked: [node("acme/web", ASKED)] };
 
-function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, width = 340, store = {}, folders = [], repos = {}, lists = {}, failing = [], cached = [], curl = 0, stored = { filter: JSON.stringify("all") }, search = github(YOURS), tree = null } = {}) {
+function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, width = 340, store = {}, folders = [], repos = {}, lists = {}, failing = [], cached = [], curl = 0, stored = { filter: JSON.stringify("all") }, search = github(YOURS), tree = null, paneList = [] } = {}) {
   const execs = [];
   const commands = [];
+  const closed = [];
   const notes = [];
   const timers = [];
   const tasks = [];
   const removed = [];
+  let currentTree = tree;
   // GraphQL calls in flight at once, at most.
   const load = { active: 0, peak: 0 };
   const el = () => {
@@ -116,10 +118,10 @@ function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, wi
     },
     props: () => given, shared: (key) => store[key], setShared: (key, value) => { store[key] = value; },
     spaces: () => folders.map((f) => ({ folder: f.folder, machine: null })), theme: () => new Proxy({}, { get: () => "#aabbcc" }), settings: () => ({ zoom: 1 }),
-    run: (name, args) => commands.push({ name, args }), notify: (n) => notes.push(n), window: () => ({ platform: "macos" }),
+    run: (name, args) => commands.push({ name, args }), closeOverlay: (id) => closed.push(id), notify: (n) => notes.push(n), window: () => ({ platform: "macos" }),
     localStorage: storage,
     appHome: () => "/app", exists: async (path) => cached.includes(path), mkdir: async () => {}, unlink: async (path) => removed.push(path),
-    layout: () => tree,
+    layout: () => currentTree, panes: () => paneList,
     ...model, ...sidebar,
   };
   const source = readFileSync(new URL("../mods/github-prs/main.js", import.meta.url), "utf8")
@@ -129,7 +131,7 @@ function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, wi
   view.init({}, cx);
   view.width = width;
   const settle = async () => { while (tasks.length) await tasks.shift(); };
-  return { view, cx, input, repoInput: inputs[1], execs, commands, notes, timers, storage, settle, removed, store, load };
+  return { view, cx, input, repoInput: inputs[1], execs, commands, closed, notes, timers, storage, settle, removed, store, load, setTree: (next) => { currentTree = next; } };
 }
 
 function find(node, id) {
@@ -684,4 +686,106 @@ test("with nothing of yours open, the list says so, whichever chip is on", async
   assert.ok(words.includes("Nothing of yours is open, and no review is waiting on you"));
   assert.ok(words.some((w) => /Reviews asked of your teams aren't included/.test(w)));
   assert.equal(find(h.view.render(), "repo-tabs"), null);
+});
+
+test("the close button hides the panel and any sidebar column it empties, and cancels pending refreshes", async () => {
+  const sole = shared({ id: "sidebar-right", type: "column", children: [{ id: "prs", type: "block", content: { mod: "github-prs", props: { block: "prs" } } }] });
+  const h1 = setup({ tree: sole });
+  await h1.settle();
+  const scheduled = h1.timers.at(-1);
+  find(h1.view.render(), "hide").props.on_click(null, h1.cx);
+  assert.equal(scheduled.cancelled, true);
+  assert.deepEqual(h1.commands, [{ name: "layout.hide", args: { id: "sidebar-right" } }]);
+
+  const h2 = setup({ tree: shared(structuredClone(COLUMN)) });
+  await h2.settle();
+  find(h2.view.render(), "hide").props.on_click(null, h2.cx);
+  assert.deepEqual(h2.commands, [{ name: "layout.hide", args: { id: "prs" } }], "leaves visible sibling panels open");
+
+  const withHiddenSibling = shared({
+    id: "sidebar-right",
+    type: "column",
+    children: [
+      { id: "prs", type: "block", content: { mod: "github-prs", props: { block: "prs" } } },
+      { id: "stats-right", type: "block", hidden: true, content: { mod: "herdr-stats", props: { spot: "right" } } },
+    ],
+  });
+  const h3 = setup({ tree: withHiddenSibling });
+  await h3.settle();
+  find(h3.view.render(), "hide").props.on_click(null, h3.cx);
+  assert.deepEqual(h3.commands, [
+    { name: "layout.hide", args: { id: "prs" } },
+    { name: "layout.hide", args: { id: "sidebar-right" } },
+  ]);
+});
+
+test("polling pauses while hidden and resumes immediately when reshown", async () => {
+  const hiddenTree = shared({ id: "sidebar-right", type: "column", hidden: true, children: [{ id: "prs", type: "block", content: { mod: "github-prs", props: { block: "prs" } } }] });
+  const h = setup({ tree: hiddenTree });
+  await h.settle();
+  assert.equal(h.execs.length, 0, "does not poll gh while hidden");
+  assert.equal(h.view.paused, true);
+  h.setTree(shared({ id: "sidebar-right", type: "column", children: [{ id: "prs", type: "block", content: { mod: "github-prs", props: { block: "prs" } } }] }));
+  h.view.render(h.cx);
+  assert.equal(h.view.paused, false);
+  const wake = h.timers.at(-1);
+  assert.equal(wake.ms, 0);
+  wake.fn(h.cx);
+  await h.settle();
+  assert.ok(h.execs.some((e) => e[0] === "gh" && e[1] === "pr"), "resumes fetching when reshown");
+});
+
+test("mod.open toggles a docked prs block and closes its overlay, or opens standalone when undocked", async () => {
+  const visibleTree = shared({ id: "sidebar-right", type: "column", children: [{ id: "prs", type: "block", content: { mod: "github-prs", props: { block: "prs" } } }] });
+  const hHide = setup({ given: { overlay: "ov1" }, tree: visibleTree });
+  await hHide.settle();
+  assert.deepEqual(hHide.commands, [{ name: "layout.hide", args: { id: "sidebar-right" } }]);
+  assert.deepEqual(hHide.closed, ["ov1"]);
+  assert.equal(hHide.execs.length, 0);
+
+  const hiddenTree = shared({ id: "sidebar-right", type: "column", hidden: true, children: [{ id: "prs", type: "block", content: { mod: "github-prs", props: { block: "prs" } } }] });
+  const hShow = setup({ given: { overlay: "ov2" }, tree: hiddenTree });
+  await hShow.settle();
+  assert.deepEqual(hShow.commands, [{ name: "layout.show", args: { id: "sidebar-right" } }]);
+  assert.deepEqual(hShow.closed, ["ov2"]);
+
+  const undocked = setup({ given: { overlay: "ov3", repo: "o/r" }, tree: shared({ id: "stats", type: "block", content: { mod: "herdr-stats" } }) });
+  await undocked.settle();
+  assert.deepEqual(undocked.closed, []);
+  const root = undocked.view.render(undocked.cx);
+  assert.equal(find(root, "collapse"), null);
+  find(root, "hide").props.on_click(null, undocked.cx);
+  assert.deepEqual(undocked.closed, ["ov3"]);
+});
+
+test("a copy opened in a pane keeps polling and offers no × or fold while the docked block is hidden", async () => {
+  // Mods' "Open beside" splits a pane with no props, so it has no `block` of its own.
+  const hiddenTree = shared({ id: "sidebar-right", type: "column", hidden: true, children: [{ id: "prs", type: "block", content: { mod: "github-prs", props: { block: "prs" } } }] });
+  const h = setup({ given: { repo: "o/r" }, tree: hiddenTree, paneList: [{ pane: "p1", mod: "github-prs", tab: "t1", title: "github-prs" }] });
+  await h.settle();
+  assert.equal(h.view.paused, false);
+  assert.ok(h.execs.some((e) => e[0] === "gh" && e[1] === "pr"), "fetches although the docked block is hidden");
+  assert.ok(h.timers.some((t) => t.ms > 0 && !t.cancelled), "keeps its next refresh");
+  const root = h.view.render(h.cx);
+  assert.equal(find(root, "hide"), null);
+  assert.equal(find(root, "collapse"), null);
+  assert.deepEqual(h.commands, []);
+
+  // The docked block names itself with its `block` prop, so it still pauses with a pane open.
+  const docked = setup({ given: { repo: "o/r", block: "prs" }, tree: hiddenTree, paneList: [{ pane: "p1", mod: "github-prs", tab: "t1", title: "github-prs" }] });
+  await docked.settle();
+  assert.equal(docked.view.paused, true);
+  assert.equal(docked.execs.length, 0);
+});
+
+test("a reshown panel waits for a render that can schedule before it stops being paused", async () => {
+  const hiddenTree = shared({ id: "sidebar-right", type: "column", hidden: true, children: [{ id: "prs", type: "block", content: { mod: "github-prs", props: { block: "prs" } } }] });
+  const h = setup({ tree: hiddenTree });
+  await h.settle();
+  h.setTree(shared({ id: "sidebar-right", type: "column", children: [{ id: "prs", type: "block", content: { mod: "github-prs", props: { block: "prs" } } }] }));
+  h.view.render();
+  assert.equal(h.view.paused, true, "a render without cx can't restart polling, so it stays paused");
+  h.view.render(h.cx);
+  assert.equal(h.view.paused, false);
+  assert.equal(h.timers.at(-1).ms, 0);
 });
