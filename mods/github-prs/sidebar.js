@@ -1,13 +1,4 @@
-// Sidebars belong to the layout, not to any one mod. A sidebar is the outermost column (or lone
-// block) beside the tabs that holds a mod: Herdr's `sidebar` on the left, `sidebar-right` on the
-// right, a panel column inside the work area. Mods stack inside it as panels, and folding to a
-// rail resizes the sidebar, never a panel, so every panel in it goes narrow together.
-// A mod with a fold button can copy this file as is (mods can't import each other).
-
-/** The id Herdr's own sidebar uses, and the one a right sidebar gets when a mod makes it. */
-export const LEFT = "sidebar";
-export const RIGHT = "sidebar-right";
-
+// Visibility of a pull request panel and the layout containers around it.
 const holdsTabs = (n) => Boolean(n?.content?.tab) || (n?.children ?? []).some(holdsTabs);
 
 const stackActiveId = (stack) => stack?.active ?? (stack?.children ?? []).find((c) => c && !c.hidden && c.id != null)?.id;
@@ -91,26 +82,4 @@ export function showTargets(root, test, fallbackId = null) {
     if (id) show.push(id);
   }
   return { show, select };
-}
-
-/** The sidebar holding the node `test` matches: the outermost node on its path that sits in a row
- *  and doesn't hold the tabs. The node itself when it is a lone block at the edge; null when it is
- *  in no row (a floating block, a pane) or the layout isn't known. */
-export function sidebarOf(root, test) {
-  const path = pathTo(root, test);
-  if (!path) return null;
-  for (let i = 1; i < path.length; i++) {
-    if (path[i - 1].type === "row" && !holdsTabs(path[i])) return path[i];
-  }
-  return null;
-}
-
-/** Where the width to expand back to is kept, shared by every mod in that sidebar. Herdr's own
- *  sidebar keeps it under `sidebar.width`, as its fold button does. */
-export const widthKey = (id) => (id === LEFT ? "sidebar.width" : `sidebar.width.${id}`);
-
-/** The rail width for a sidebar: Herdr's left one leaves room for macOS's window buttons. */
-export function railWidth(id, platform, rail) {
-  if (id === LEFT) return platform === "macos" ? 76 : 44;
-  return rail;
 }

@@ -108,8 +108,8 @@ repositories.
   typo, lost access), a banner says what to do, its tab shows a red mark, and the others keep
   listing. If GitHub leaves part of an answer out (an organization that limits what `gh` can
   read), the banner says so, and the rest is listed.
-- **Rail:** › folds the sidebar to a 52 px rail with the failing, running and passing counts.
-  ‹ unfolds it to the width it had before. It folds the whole sidebar the panel sits in, so
+- **Rail:** Click the sidebar icon in the header to fold the right sidebar to a 52 px rail with the failing, running and passing counts.
+  Click the same icon to restore its previous width. It folds the whole sidebar the panel sits in, so
   other panels there (the stats, a board) go to their rails with it.
 - **Hide & reshow:** × in the header hides the panel (and `sidebar-right` if it was the last
   visible panel in it) and pauses `gh` polling until reshown. Bring it back from **Bar** (`Cmd+K`,

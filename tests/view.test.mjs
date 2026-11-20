@@ -121,9 +121,12 @@ function setup({ list = LIST, code = 0, stderr = "", given = { repo: "o/r" }, wi
     run: (name, args) => commands.push({ name, args }), closeOverlay: (id) => closed.push(id), notify: (n) => notes.push(n), window: () => ({ platform: "macos" }),
     localStorage: storage,
     appHome: () => "/app", exists: async (path) => cached.includes(path), mkdir: async () => {}, unlink: async (path) => removed.push(path),
-    layout: () => currentTree, panes: () => paneList,
+    placement: () => null, layout: () => currentTree, panes: () => paneList,
     ...model, ...sidebar,
   };
+  const railSource = readFileSync(new URL("../mods/github-prs/sidebar-rail.js", import.meta.url), "utf8")
+    .replace(/^import .*;$/gm, "").replaceAll("export function ", "function ");
+  imports.sidebarButton = new Function(...Object.keys(imports), railSource + "\nreturn sidebarButton;")(...Object.values(imports));
   const source = readFileSync(new URL("../mods/github-prs/main.js", import.meta.url), "utf8")
     .replace(/^import [\s\S]*?;$/gm, "").replace("export default class", "return class");
   const View = new Function(...Object.keys(imports), source)(...Object.values(imports));
@@ -235,7 +238,7 @@ test("refresh doesn't stack fetches, and replaces the scheduled one", async () =
 });
 
 test("a narrow column is a rail that expands back to its remembered width", async () => {
-  const h = setup();
+  const h = setup({ tree: shared({ id: "prs", type: "block", content: { mod: "github-prs" } }) });
   await h.settle();
   find(h.view.render(), "collapse").props.on_click(null, h.cx);
   assert.deepEqual(h.commands.at(-1), { name: "layout.resize", args: { id: "prs", px: 52 } });
@@ -261,7 +264,7 @@ const COLUMN = { id: "sidebar-right", type: "column", children: [
 ] };
 
 test("in a sidebar shared with other panels, folding narrows the sidebar, not this panel's height", async () => {
-  const h = setup({ tree: shared(COLUMN), width: 320 });
+  const h = setup({ tree: shared(COLUMN), width: 320, given: { block: "prs", repo: "o/r" } });
   await h.settle();
   find(h.view.render(), "collapse").props.on_click(null, h.cx);
   assert.deepEqual(h.commands.at(-1), { name: "layout.resize", args: { id: "sidebar-right", px: 52 } });
@@ -283,7 +286,7 @@ test("the sidebar is found by the block's mod and props when its id differs, and
 });
 
 test("a panel alone at the edge folds itself, as before", async () => {
-  const h = setup({ tree: shared(COLUMN.children[0]) });
+  const h = setup({ tree: shared(COLUMN.children[0]), given: { block: "prs", repo: "o/r" } });
   await h.settle();
   find(h.view.render(), "collapse").props.on_click(null, h.cx);
   assert.deepEqual(h.commands.at(-1), { name: "layout.resize", args: { id: "prs", px: 52 } });

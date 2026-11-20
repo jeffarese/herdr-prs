@@ -1,3 +1,4 @@
+import { sidebarButton } from "./sidebar-rail.js";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { exec, props, theme, settings, run, notify, window, appHome, shared, setShared, spaces, layout, panes, closeOverlay } from "herdr";
@@ -9,7 +10,7 @@ import {
   chosenMode, withTeams, modeKey, teamsKey, INTRO_KEY, reposOf,
   BATCH, PARALLEL, findArgs, detailsArgs, parseFound, parseDetails, yours, chunks, pool, tooSlow, cutOff, paced,
 } from "./model.js";
-import { sidebarOf, widthKey, railWidth, LEFT, hasBlock, isHidden, hideTargets, showTargets } from "./sidebar.js";
+import { hasBlock, isHidden, hideTargets, showTargets } from "./sidebar.js";
 
 const MOD = "github-prs";
 const ART = `mods/${MOD}/`;
@@ -29,7 +30,6 @@ const tone = (t, key) => (key === "pass" ? t.ansi2 ?? t.done : t[key] ?? t.muted
 // Below this width the sidebar is a rail of counts.
 const RAIL = 170;
 const WIDE = 340;
-const NARROW = 52;
 const STATE_WORD = { failing: "Checks failing", running: "Checks running", passing: "Checks passing", none: "No checks" };
 // At most this many suggestions in the repository panel, and this many space folders asked about.
 const SUGGEST = 8;
@@ -566,32 +566,6 @@ export default class PullRequests extends View {
     for (const id of hideTargets(layout(), this.mine(), this.block)) run("layout.hide", { id });
   }
 
-  // The sidebar this copy sits in: the column it shares with other panels (stats, a board), or
-  // its own block when it is alone at the edge. Folding acts on that, never on this block alone,
-  // so a panel stacked in a column doesn't fold its height instead of the column's width.
-  sidebar() {
-    const root = layout();
-    const found = sidebarOf(root, this.mine());
-    return { id: found?.id ?? this.block, left: Boolean(found) && root?.children?.[0] === found };
-  }
-
-  // The width to come back to is the sidebar's, shared by every mod in it.
-  collapse() {
-    const { id } = this.sidebar();
-    if (Number.isFinite(this.width) && this.width >= RAIL) setShared(widthKey(id), Math.round(this.width));
-    // Mods made before Herdr's rail went by width still read this flag, as its own fold sets it.
-    if (id === LEFT) setShared("sidebar.collapsed", true);
-    run("layout.resize", { id, px: railWidth(id, window()?.platform, NARROW) });
-  }
-
-  expand() {
-    const { id } = this.sidebar();
-    // Before the width was shared, each copy kept its own.
-    const kept = Number(shared(widthKey(id))) || Number(store.get("width", WIDE)) || WIDE;
-    if (id === LEFT) setShared("sidebar.collapsed", false);
-    run("layout.resize", { id, px: Math.max(260, kept) });
-  }
-
   iconButton(t, id, icon, tip, action, spinning = false) {
     const art = glyph(icon, 15);
     return div().id(id).size(26).flex_none().rounded(6).flex().items_center().justify_center()
@@ -828,12 +802,10 @@ export default class PullRequests extends View {
   rail(t) {
     const n = stateCounts(sections(this.prs ?? [], "", this.filter, this.currentScope()).flatMap((s) => s.prs));
     const title = this.title();
-    const what = /pull requests$/i.test(title) ? title.charAt(0).toLowerCase() + title.slice(1) : `${title} pull requests`;
     const item = (state, word) => n[state] ? v_flex().id(`rail-${state}`).flex_none().items_center().gap(3).py(4)
       .tooltip(`${n[state]} ${word}`).accessibility_label(`${n[state]} ${word}`)
       .child(this.stateMark(t, state, 15)).child(div().text_size(10.5).text_color(t.muted).child(String(n[state]))) : null;
     return [
-      this.iconButton(t, "expand", this.sidebar().left ? "chevron-right" : "chevron-left", `Show ${what}`, () => this.expand()).mt(8),
       div().id("rail-repo").mt(4).flex_none().tooltip(`${title}: ${inScope(this.prs ?? [], this.currentScope()).length} open`).child(glyph("pr", 16).text_color(t.accent)),
       ...[item("failing", "failing"), item("running", "running"), item("passing", "passing")].filter(Boolean),
       this.error ? div().id("rail-error").flex_none().tooltip(this.error).child(glyph("fail", 13).text_color(t.blocked)) : null,
@@ -1051,15 +1023,17 @@ export default class PullRequests extends View {
         else return;
         cx.stop_propagation();
       });
-    if (compact) return root.items_center().gap(6).children(this.rail(t));
+    const fold = sidebarButton(MOD, this.width, { fallback: Number(store.get("width", WIDE)) || WIDE });
+    if (compact) return root.items_center().pt(4)
+      .when(fold, el => el.child(fold))
+      .child(v_flex().id("pr-rail").w_full().flex_1().min_h(0).items_center().gap(6).overflow_y_scroll().children(this.rail(t)));
     const docked = this.docked();
     const actions = h_flex().flex_none().gap(2).items_center()
       .when(listing, (el) => el
         .child(this.iconButton(t, "repos", "sliders", this.setup ? "Back to the list" : "Choose what to list", (cx) => this.openSetup(!this.setup, cx))
           .when(this.setup, (b) => b.bg(t.selected).text_color(t.foreground)))
         .child(this.iconButton(t, "refresh", "refresh", tip, (cx) => this.refresh(cx), this.loading)))
-      .when(docked, (el) => el
-        .child(this.iconButton(t, "collapse", this.sidebar().left ? "chevron-left" : "chevron-right", "Fold to a rail", () => this.collapse())))
+      .when(fold, el => el.child(fold))
       .when(Boolean(this.given.overlay) || docked, (el) => el
         .child(this.iconButton(t, "hide", "x", this.given.overlay ? "Close" : "Hide pull requests", () => this.hide())));
     const header = h_flex().h(40).flex_none().pl(14).pr(8).gap(8).items_center()
