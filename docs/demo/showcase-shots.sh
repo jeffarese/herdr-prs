@@ -18,7 +18,7 @@ kit=${SHOWCASE_KIT:-$HOME/workspace/herdr/herdr-showcase}
 w=
 trap '[ -z "$w" ] || sh "$kit/stage.sh" --down "$w"' EXIT
 trap 'exit 130' INT TERM HUP
-w=$(SHOWCASE_TFVPN=0 SHOWCASE_HOOK="$here/showcase.sh" sh "$kit/stage.sh" </dev/null)
+w=$(SHOWCASE_VPN=0 SHOWCASE_HOOK="$here/showcase.sh" sh "$kit/stage.sh" </dev/null)
 [ -n "$w" ] || { echo "showcase-shots: no stage" >&2; exit 1; }
 
 shoot() { sh "$kit/shoot.sh" "$w" "$@"; }

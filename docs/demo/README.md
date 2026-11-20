@@ -38,7 +38,7 @@ From this repository's root, with the showcase kit in `~/workspace/herdr/herdr-s
 sh docs/demo/showcase-shots.sh
 ```
 
-[showcase-shots.sh](showcase-shots.sh) builds a stage with `SHOWCASE_TFVPN=0` (the VPN switch
+[showcase-shots.sh](showcase-shots.sh) builds a stage with `SHOWCASE_VPN=0` (the VPN switch
 left out, as for every public README) and this hook, takes preview.png, sets the What to list
 scene and takes its crop of the right sidebar (`PANEL_CROP`, in pixels of the 3200-wide
 picture), then takes the stage down, also when something fails. Each picture goes through the
@@ -50,7 +50,7 @@ To work on a scene by hand, keep a stage up:
 
 ```sh
 kit=~/workspace/herdr/herdr-showcase
-w=$(SHOWCASE_TFVPN=0 SHOWCASE_HOOK=$PWD/docs/demo/showcase.sh sh $kit/stage.sh)
+w=$(SHOWCASE_VPN=0 SHOWCASE_HOOK=$PWD/docs/demo/showcase.sh sh $kit/stage.sh)
 sh docs/demo/showcase.sh "$w" what-to-list    # or without the scene name: preview.png's
 sh $kit/shoot.sh "$w" /tmp/look.png
 sh $kit/stage.sh --down "$w"

@@ -2,7 +2,7 @@
 # The pull request sidebar's scene on a showcase stage (~/workspace/herdr/herdr-showcase).
 # scene.sh runs it after the default scene, with the stage folder:
 #
-#   w=$(SHOWCASE_TFVPN=0 SHOWCASE_HOOK=$PWD/docs/demo/showcase.sh sh ~/workspace/herdr/herdr-showcase/stage.sh)
+#   w=$(SHOWCASE_VPN=0 SHOWCASE_HOOK=$PWD/docs/demo/showcase.sh sh ~/workspace/herdr/herdr-showcase/stage.sh)
 #
 # With no second argument: preview.png's scene. The sidebar lists yours (a new sidebar's
 # default) and gets the room to show every section unfolded: Failing, Running, Passing and No
