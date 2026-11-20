@@ -7,7 +7,9 @@ requests, grouped by the state of their checks. By default it lists the ones you
 ones waiting on your review, from every repository. It can list every open pull request of the
 repositories you pick instead.
 
-![The Herdr window with the pull request sidebar on the right, titled Your pull requests, 7. Tabs for All, api, docs and web sit under the title. The list is grouped into Failing (1), Running (3), Passing (1) and No checks (1). Each row shows the repository and number, such as api#1203, the title, how long ago it was updated, the author's avatar, tags such as M, New, Needs review, Your review, Ready to merge and Auto-merge, and one small colored square per check.](preview.png)
+![The Herdr window, with the pull request sidebar at the top of the right-hand column. Titled Your pull requests, 7, it has tabs for All, api, design-system, docs, shop and web with their counts, a search box, and the filters Ready to review, All, Mine, Review and Drafts. The list is grouped by the state of the checks: Failing, design-system#88 Tokens for the dark theme; Running, api#1203 Add retries to the webhook client and web#133 Fix the cart total when a coupon expires; Passing, shop#128 Fix the flaky checkout test (Ready to merge), web#131 Release notes for 2.4 (Auto-merge, Approved) and api#1201 Rate-limit the public API per key (Your review); No checks, docs#57 Document the v2 webhooks. Each row has its state mark, repository and number, title and how long ago it was updated, and under that the author's avatar, a size tag such as M, tags such as New and Needs review, and one square per check, red failed, amber running, green passed. Below it in the same column, the CPU, memory and temperatures with Claude Code as the busiest terminal, then the servers running on ports 5173 and 5432. On the left, the Sessions sidebar lists the agents on this computer and on studio by state; in the middle, Claude Code works on Speed up the checkout page under a header with its model, context and limits. In the bottom right corner, two notifications: Fix the flaky checkout test finished in 4m 12s, and Rotate the API signing keys needs permission. The rest of the window is dimmed. The sessions, repositories and people are made up.](preview.png)
+
+*Around it: the [Sessions sidebar](https://github.com/jeffarese/herdr-agents-sidebar) on the left, a pane header with the model and limits over Claude Code, [stats](https://github.com/jeffarese/herdr-stats-mod) and what's running below the pull requests, and two notifications in the corner. Every session in it is made up.*
 
 Your pull requests, the ones waiting on your review and the ones whose checks just broke, in
 one list beside your terminals and agents, refreshed while you work. Click a row to see its
@@ -41,7 +43,7 @@ once, and until you close it, a note at the top says what it shows and how to ch
 
 The **sliders button** in the header opens **What to list**, where you choose between the two:
 
-![The sidebar's panel, titled What to list. Two choices, each with a round button: Yours, "Pull requests you opened or were asked to review, from every repository", and Repositories, "Every open pull request in the repositories you pick", which is chosen. Below them, a box takes owner/name or a GitHub link, with an Add button, and under "Suggested: your spaces and recent pushes" are acme/shop, acme/api, acme/web, acme/docs, acme/design-system and sam/dotfiles, each with a plus.](docs/media/what-to-list.png)
+![The pull request sidebar's What to list panel, cut out of the right-hand column of the same window. Under the title Pull requests, a line says it lists open pull requests with the state of their checks, and that this can change at any time. Two choices, each with a round button: Yours, "Pull requests you opened or were asked to review, from every repository", and Repositories, "Every open pull request in the repositories you pick", which is chosen. Below them, a box takes owner/name or a GitHub link, with an Add button, and under "Suggested: your spaces and recent pushes" are acme/shop, acme/api, acme/web, acme/docs, acme/design-system, acme/search and sam/dotfiles, each with a plus. The repositories are made up.](docs/media/what-to-list.png)
 
 - **Yours:** the pull requests you opened, and the ones whose review was asked of you by name.
   **Include reviews asked of your teams** adds those asked of any team you're in, with a Team
@@ -206,7 +208,7 @@ Everything goes through programs you already have; the mod makes no other networ
 ```sh
 npm test                          # 50 Node tests: model and view
 herdr-app check mods/github-prs   # Herdr's own checker
-sh docs/demo/record.sh            # the pictures, on a synthetic stage
+sh docs/demo/showcase-shots.sh    # the pictures, on the showcase stage
 ```
 
 - **`mods/github-prs/model.js`** is the data: check dedup, states, sections, filters, tags,
@@ -215,7 +217,18 @@ sh docs/demo/record.sh            # the pictures, on a synthetic stage
 - **`mods/github-prs/main.js`** draws the sidebar and runs `gh`, with Herdr's `herdr` and
   `gpui-kit` modules. `tests/view.test.mjs` runs it against an in-memory builder.
 - **`scripts/install.py`** puts the block in the layout.
-- **[docs/demo](docs/demo)** builds the stage the pictures were taken on. Nothing in them is real.
+- **[docs/demo](docs/demo)** says how the pictures are taken, on a made-up Herdr world shared
+  by these mods' READMEs, and holds this mod's scene for it. Nothing in them is real.
+
+## Works well with
+
+The pictures above are one Herdr window with these mods running together:
+
+- [Sessions sidebar](https://github.com/jeffarese/herdr-agents-sidebar): every agent and shell on all your machines in one sidebar, with sub-agents and background work.
+- [Stats](https://github.com/jeffarese/herdr-stats-mod): CPU, memory, GPU, network and temperatures beside your terminals, and which agent is using them.
+- [Quick switcher](https://github.com/jeffarese/herdr-bar-mod): ⌘K to any agent, tab, pane or space on every machine.
+- [Mod hub](https://github.com/jeffarese/herdr-mod-hub): browse the gallery, read a mod's code before installing it, and manage your mods.
+- [Outside](https://github.com/jeffarese/herdr-outside): the agents and terminals herdr-core runs outside your spaces.
 
 ## License
 

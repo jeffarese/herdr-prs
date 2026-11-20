@@ -1,43 +1,63 @@
 # The README's pictures
 
 [preview.png](../../preview.png) and [what-to-list.png](../media/what-to-list.png) show the real
-sidebar in the real Herdr app, on a stage that is synthetic from end to end. Nothing in them
-comes from a real repository, project or person.
+sidebar in the real Herdr app, on the showcase stage: a made-up Herdr world that every mod's
+README is pictured in (`~/workspace/herdr/herdr-showcase`, its `BRIEF.md` and `README.md`).
+Nothing in them comes from a real repository, project or person.
 
-**Real:** the Herdr app, herdr-core, this repository's mod and its installer.
+**Real:** the Herdr app, herdr-core, this repository's mod as its working tree has it, and the
+other mods around it, in one layout.
 
-**Synthetic:**
+**Made up:** Sam, who works at Acme, his spaces and agents on two machines, the servers, the
+toasts, and GitHub. The kit's `bin/gh` (grown from this folder's [bin/gh](bin/gh)) answers the
+calls the sidebar makes with Acme's repositories (`acme/shop`, `acme/api`, `acme/web`,
+`acme/docs`, `acme/design-system`), people and pull requests, timed relative to now, and its
+`bin/curl` draws the avatars. Nothing contacts GitHub.
 
-- **GitHub.** [bin/gh](bin/gh) stands in for the GitHub CLI. It answers the calls the sidebar
-  makes, a repository's list and the two steps of the search for yours, with made-up
-  repositories (`acme/web`, `acme/api`, `acme/docs`), people and pull requests, timed relative
-  to now. It never contacts GitHub, and logs each call to `gh.log` in the stage.
-- **The avatars.** [bin/curl](bin/curl) draws a pattern for each author instead of
-  downloading a picture.
-- **The projects.** `~/code/shop` and `~/code/api` are empty folders that the stand-in `gh`
-  treats as clones.
-- **The app.** A second Herdr app whose home is in the stage, with its own herdr-core, the
-  welcome already seen and usage reports off.
+## The scene
 
-Nothing of yours is read or written, and your own spaces don't show.
+The kit builds the stage and plays the default scene: the shop space's Claude Code in front, the
+right sidebar shared by this sidebar, the stats and the running list, and two toasts. Then it
+runs [showcase.sh](showcase.sh), this mod's hook, which changes the stage's copy of the layout:
+
+- **preview.png:** the sidebar lists yours, as a new one does, and is 585 pt tall, so all
+  seven pull requests show with their sections unfolded: Failing, Running, Passing and No
+  checks. The stats take 165 pt in their compact form, and the running list the rest, with its
+  servers above the toasts. Nothing is dimmed.
+- **what-to-list.png** (`showcase.sh <stage> what-to-list`): the same block, under a new block
+  name, told to list repositories with none picked yet, so it opens on its What to list panel
+  with suggestions from the stage's spaces. The picture is the block, cut out of the right
+  sidebar.
 
 ## Take them again
 
+From this repository's root, with the showcase kit in `~/workspace/herdr/herdr-showcase`
+(`SHOWCASE_KIT` names another place):
+
 ```sh
-sh docs/demo/record.sh
+sh docs/demo/showcase-shots.sh
 ```
 
-It needs the Herdr app, herdr-core and python3. The app draws the pictures itself
-(`herdr-app shot`), so no screen recording permission is involved.
+[showcase-shots.sh](showcase-shots.sh) builds a stage with `SHOWCASE_TFVPN=0` (the VPN switch
+left out, as for every public README) and this hook, takes preview.png, sets the What to list
+scene and takes its crop of the right sidebar (`PANEL_CROP`, in pixels of the 3200-wide
+picture), then takes the stage down, also when something fails. Each picture goes through the
+kit's `shoot.sh`, which waits until the keyboard and mouse have been still for a minute and
+brings the stage's window to the front for about a second and a half, so a run takes a few
+minutes.
 
-- **[stage.sh](stage.sh)** starts the core and the second app, and prints the stage's folder.
-  `stage.sh --down <folder>` stops everything and deletes it.
-- **[shots.sh](shots.sh)** opens two spaces, runs the installer and takes the pictures: the
-  sidebar listing yours, then its panel set to pick repositories.
-- **[record.sh](record.sh)** runs both and takes the stage down.
+To work on a scene by hand, keep a stage up:
 
-Two things to know before you run it:
+```sh
+kit=~/workspace/herdr/herdr-showcase
+w=$(SHOWCASE_TFVPN=0 SHOWCASE_HOOK=$PWD/docs/demo/showcase.sh sh $kit/stage.sh)
+sh docs/demo/showcase.sh "$w" what-to-list    # or without the scene name: preview.png's
+sh $kit/shoot.sh "$w" /tmp/look.png
+sh $kit/stage.sh --down "$w"
+```
 
-- **The second app's window comes to the front for each picture,** because the app only draws
-  while its window can be seen. Keys you type meanwhile go to it; its terminals don't show them.
-- **Starting the Herdr app installs an app update that was waiting,** as any start does.
+## The older stage
+
+[stage.sh](stage.sh), [shots.sh](shots.sh) and [record.sh](record.sh) built this repository's
+own stage (one app with two shell spaces and Herdr's shipped layout) and took the earlier
+pictures. They still run, but no README picture comes from them now.
